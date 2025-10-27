@@ -36,7 +36,20 @@ async function createRoom(req, res) {
       "INSERT INTO rooms (room_name, room_description, created_by) VALUES (?, ?, ?)",
       [room_name, room_description || null, created_by || null]
     );
-    res.status(201).json({ room_id: result.insertId, room_name, room_description, created_by });
+    // after creating room, insert default 4 time slots for that room
+    const roomId = result.insertId;
+    const defaultSlots = ['08:00-10:00','10:00-12:00','13:00-15:00','15:00-17:00'];
+    try {
+      const placeholders = defaultSlots.map(() => '(?, ?)').join(', ');
+      const params = [];
+      defaultSlots.forEach((p) => { params.push(roomId, p); });
+      await con.execute(`INSERT INTO time_slots (room_id, time_period) VALUES ${placeholders}`, params);
+    } catch (slotErr) {
+      console.error('createRoom - inserting default slots error:', slotErr);
+      // not fatal for room creation; continue but warn
+    }
+
+    res.status(201).json({ room_id: roomId, room_name, room_description, created_by });
   } catch (err) {
     console.error('createRoom error:', err);
     if (err && err.code === 'ER_DUP_ENTRY') {
@@ -69,11 +82,24 @@ async function deleteRoom(req, res) {
   if (!id) return res.status(400).json({ error: 'room id is required' });
   try {
     const con = await getConnection();
+    // ensure atomic delete: remove time_slots then room (DB has FK with cascade but play safe)
+    await con.beginTransaction();
+    await con.execute("DELETE FROM time_slots WHERE room_id = ?", [id]);
     const [result] = await con.execute("DELETE FROM rooms WHERE room_id = ?", [id]);
-    if (result.affectedRows === 0) return res.status(404).json({ error: 'Room not found' });
-    res.json({ message: 'Room deleted' });
+    if (result.affectedRows === 0) {
+      await con.rollback();
+      return res.status(404).json({ error: 'Room not found' });
+    }
+    await con.commit();
+    res.json({ message: 'Room and its time slots deleted' });
   } catch (err) {
     console.error('deleteRoom error:', err);
+    try {
+      const con = await getConnection();
+      await con.rollback();
+    } catch (e) {
+      // ignore rollback errors
+    }
     res.status(500).json({ error: 'Database error' });
   }
 }
