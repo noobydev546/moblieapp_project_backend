@@ -1,0 +1,161 @@
+const { getConnection } = require("../config/db.js");
+
+// System controller for room booking: rooms, time slots, bookings
+
+async function listRooms(req, res) {
+  try {
+    const con = await getConnection();
+    const [rows] = await con.execute("SELECT room_id, room_name, room_description, created_by FROM rooms");
+    res.json(rows);
+  } catch (err) {
+    console.error('listRooms error:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+}
+
+async function getRoom(req, res) {
+  const { id } = req.params;
+  if (!id) return res.status(400).json({ error: 'room id is required' });
+  try {
+    const con = await getConnection();
+    const [rows] = await con.execute("SELECT room_id, room_name, room_description, created_by FROM rooms WHERE room_id = ?", [id]);
+    if (rows.length === 0) return res.status(404).json({ error: 'Room not found' });
+    res.json(rows[0]);
+  } catch (err) {
+    console.error('getRoom error:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+}
+
+async function createRoom(req, res) {
+  const { room_name, room_description, created_by } = req.body;
+  if (!room_name) return res.status(400).json({ error: 'room_name is required' });
+  try {
+    const con = await getConnection();
+    const [result] = await con.execute(
+      "INSERT INTO rooms (room_name, room_description, created_by) VALUES (?, ?, ?)",
+      [room_name, room_description || null, created_by || null]
+    );
+    res.status(201).json({ room_id: result.insertId, room_name, room_description, created_by });
+  } catch (err) {
+    console.error('createRoom error:', err);
+    if (err && err.code === 'ER_DUP_ENTRY') {
+      return res.status(409).json({ error: 'Room name already exists' });
+    }
+    res.status(500).json({ error: 'Database error' });
+  }
+}
+
+async function updateRoom(req, res) {
+  const { id } = req.params;
+  const { room_name, room_description } = req.body;
+  if (!id) return res.status(400).json({ error: 'room id is required' });
+  try {
+    const con = await getConnection();
+    const [result] = await con.execute(
+      "UPDATE rooms SET room_name = COALESCE(?, room_name), room_description = COALESCE(?, room_description) WHERE room_id = ?",
+      [room_name, room_description, id]
+    );
+    if (result.affectedRows === 0) return res.status(404).json({ error: 'Room not found' });
+    res.json({ message: 'Room updated' });
+  } catch (err) {
+    console.error('updateRoom error:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+}
+
+async function deleteRoom(req, res) {
+  const { id } = req.params;
+  if (!id) return res.status(400).json({ error: 'room id is required' });
+  try {
+    const con = await getConnection();
+    const [result] = await con.execute("DELETE FROM rooms WHERE room_id = ?", [id]);
+    if (result.affectedRows === 0) return res.status(404).json({ error: 'Room not found' });
+    res.json({ message: 'Room deleted' });
+  } catch (err) {
+    console.error('deleteRoom error:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+}
+
+async function listTimeSlots(req, res) {
+  const roomId = req.params?.roomId || req.query?.roomId;
+  if (!roomId) return res.status(400).json({ error: 'roomId is required' });
+  try {
+    const con = await getConnection();
+    const [rows] = await con.execute("SELECT slot_id, room_id, time_period FROM time_slots WHERE room_id = ?", [roomId]);
+    res.json(rows);
+  } catch (err) {
+    console.error('listTimeSlots error:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+}
+
+async function createBooking(req, res) {
+  const { user_id, room_id, slot_id, booking_date, reason } = req.body;
+  if (!user_id || !room_id || !slot_id || !booking_date) {
+    return res.status(400).json({ error: 'user_id, room_id, slot_id and booking_date are required' });
+  }
+  try {
+    const con = await getConnection();
+    const [result] = await con.execute(
+      "INSERT INTO booking_history (user_id, room_id, slot_id, booking_date, reason, status) VALUES (?, ?, ?, ?, ?, 'pending')",
+      [user_id, room_id, slot_id, booking_date, reason || null]
+    );
+    res.status(201).json({ history_id: result.insertId, user_id, room_id, slot_id, booking_date, reason, status: 'pending' });
+  } catch (err) {
+    console.error('createBooking error:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+}
+
+async function listUserBookings(req, res) {
+  const userId = req.params?.userId || req.query?.userId || req.body?.user_id;
+  if (!userId) return res.status(400).json({ error: 'userId is required' });
+  try {
+    const con = await getConnection();
+    const [rows] = await con.execute(
+      `SELECT bh.history_id, bh.user_id, bh.room_id, r.room_name, bh.slot_id, ts.time_period, bh.booking_date, bh.reason, bh.status, bh.approver_id, bh.created_at, bh.approved_at
+       FROM booking_history bh
+       JOIN rooms r ON bh.room_id = r.room_id
+       JOIN time_slots ts ON bh.slot_id = ts.slot_id
+       WHERE bh.user_id = ? ORDER BY bh.created_at DESC`,
+      [userId]
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error('listUserBookings error:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+}
+
+async function approveBooking(req, res) {
+  const { history_id } = req.params;
+  const { approver_id, action } = req.body; // action: 'approved' or 'rejected'
+  if (!history_id || !approver_id || !action) return res.status(400).json({ error: 'history_id, approver_id and action are required' });
+  if (!['approved','rejected'].includes(action)) return res.status(400).json({ error: 'action must be approved or rejected' });
+  try {
+    const con = await getConnection();
+    const [result] = await con.execute(
+      "UPDATE booking_history SET status = ?, approver_id = ?, approved_at = CURRENT_TIMESTAMP WHERE history_id = ?",
+      [action, approver_id, history_id]
+    );
+    if (result.affectedRows === 0) return res.status(404).json({ error: 'Booking not found' });
+    res.json({ message: `Booking ${action}` });
+  } catch (err) {
+    console.error('approveBooking error:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+}
+
+module.exports = {
+  listRooms,
+  getRoom,
+  createRoom,
+  updateRoom,
+  deleteRoom,
+  listTimeSlots,
+  createBooking,
+  listUserBookings,
+  approveBooking,
+};
