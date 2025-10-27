@@ -3,7 +3,7 @@
 -- https://www.phpmyadmin.net/
 --
 -- Host: 127.0.0.1
--- Generation Time: Oct 26, 2025 at 07:03 AM
+-- Generation Time: Oct 27, 2025 at 07:14 PM
 -- Server version: 10.4.32-MariaDB
 -- PHP Version: 8.1.25
 
@@ -58,16 +58,18 @@ CREATE TABLE `rooms` (
   `room_id` int(11) NOT NULL,
   `room_name` varchar(100) NOT NULL,
   `room_description` text DEFAULT NULL,
-  `created_by` int(11) DEFAULT NULL
+  `created_by` int(11) DEFAULT NULL,
+  `status` varchar(20) NOT NULL DEFAULT 'Available'
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 --
 -- Dumping data for table `rooms`
 --
 
-INSERT INTO `rooms` (`room_id`, `room_name`, `room_description`, `created_by`) VALUES
-(1, 'Learning Room', 'Used for study and meetings', 2),
-(2, 'Game Room', 'Used for relaxation and fun', 2);
+INSERT INTO `rooms` (`room_id`, `room_name`, `room_description`, `created_by`, `status`) VALUES
+(1, 'Learning Room', 'Used for study and meetings', 2, 'Available'),
+(2, 'Game Room', 'Used for relaxation and fun', 2, 'Available'),
+(3, 'Study Room A101', 'Quiet study room with whiteboard', 2, 'Available');
 
 -- --------------------------------------------------------
 
@@ -78,22 +80,27 @@ INSERT INTO `rooms` (`room_id`, `room_name`, `room_description`, `created_by`) V
 CREATE TABLE `time_slots` (
   `slot_id` int(11) NOT NULL,
   `room_id` int(11) NOT NULL,
-  `time_period` enum('08:00-10:00','10:00-12:00','13:00-15:00','15:00-17:00') NOT NULL
+  `time_period` enum('08:00-10:00','10:00-12:00','13:00-15:00','15:00-17:00') NOT NULL,
+  `status` enum('Free','Pending','Reserved','Disable') NOT NULL DEFAULT 'Free'
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 --
 -- Dumping data for table `time_slots`
 --
 
-INSERT INTO `time_slots` (`slot_id`, `room_id`, `time_period`) VALUES
-(1, 1, '08:00-10:00'),
-(2, 1, '10:00-12:00'),
-(3, 1, '13:00-15:00'),
-(4, 1, '15:00-17:00'),
-(5, 2, '08:00-10:00'),
-(6, 2, '10:00-12:00'),
-(7, 2, '13:00-15:00'),
-(8, 2, '15:00-17:00');
+INSERT INTO `time_slots` (`slot_id`, `room_id`, `time_period`, `status`) VALUES
+(1, 1, '08:00-10:00', 'Free'),
+(2, 1, '10:00-12:00', 'Free'),
+(3, 1, '13:00-15:00', 'Free'),
+(4, 1, '15:00-17:00', 'Free'),
+(5, 2, '08:00-10:00', 'Free'),
+(6, 2, '10:00-12:00', 'Free'),
+(7, 2, '13:00-15:00', 'Free'),
+(8, 2, '15:00-17:00', 'Free'),
+(9, 3, '08:00-10:00', 'Free'),
+(10, 3, '10:00-12:00', 'Free'),
+(11, 3, '13:00-15:00', 'Free'),
+(12, 3, '15:00-17:00', 'Free');
 
 -- --------------------------------------------------------
 
@@ -116,7 +123,8 @@ CREATE TABLE `users` (
 INSERT INTO `users` (`user_id`, `username`, `password`, `email`, `role`) VALUES
 (1, 'toon', 'hashed_password', 'toon@example.com', 'student'),
 (2, 'adminStaff', 'hashed_password', 'adminStaff@mfu.ac.th', 'staff'),
-(3, 'lecturerJohn', 'hashed_password', 'john@mfu.ac.th', 'lecturer');
+(3, 'lecturerJohn', 'hashed_password', 'john@mfu.ac.th', 'lecturer'),
+(4, 'testuser', '$2b$10$91JJnqtG11elEO3fvl49CeR/OypfYcKf.MLXdVYiAiLVFSMJp3ywm', 'test@example.com', 'student');
 
 --
 -- Indexes for dumped tables
@@ -168,19 +176,19 @@ ALTER TABLE `booking_history`
 -- AUTO_INCREMENT for table `rooms`
 --
 ALTER TABLE `rooms`
-  MODIFY `room_id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=3;
+  MODIFY `room_id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=5;
 
 --
 -- AUTO_INCREMENT for table `time_slots`
 --
 ALTER TABLE `time_slots`
-  MODIFY `slot_id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=9;
+  MODIFY `slot_id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=17;
 
 --
 -- AUTO_INCREMENT for table `users`
 --
 ALTER TABLE `users`
-  MODIFY `user_id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=4;
+  MODIFY `user_id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=5;
 
 --
 -- Constraints for dumped tables
