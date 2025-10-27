@@ -137,17 +137,91 @@ async function createBooking(req, res) {
 
 async function listUserBookings(req, res) {
   const userId = req.params?.userId || req.query?.userId || req.body?.user_id;
-  if (!userId) return res.status(400).json({ error: 'userId is required' });
+  const userRole = req.query?.role;  // 'student', 'lecturer', or 'staff'
+  if (!userId || !userRole) return res.status(400).json({ error: 'userId and role are required' });
+
   try {
     const con = await getConnection();
-    const [rows] = await con.execute(
-      `SELECT bh.history_id, bh.user_id, bh.room_id, r.room_name, bh.slot_id, ts.time_period, bh.booking_date, bh.reason, bh.status, bh.approver_id, bh.created_at, bh.approved_at
-       FROM booking_history bh
-       JOIN rooms r ON bh.room_id = r.room_id
-       JOIN time_slots ts ON bh.slot_id = ts.slot_id
-       WHERE bh.user_id = ? ORDER BY bh.created_at DESC`,
-      [userId]
-    );
+    let query = '';
+    
+    switch(userRole) {
+      case 'student':
+        // Students see: Room name, Date, Time slot, status, reject reason, approver name
+        query = `
+          SELECT 
+            bh.history_id,
+            r.room_name,
+            bh.booking_date,
+            ts.time_period,
+            bh.status,
+            CASE 
+              WHEN bh.status = 'rejected' THEN bh.reason
+              ELSE NULL
+            END as reject_reason,
+            CASE 
+              WHEN bh.approver_id IS NOT NULL THEN CONCAT(u_approver.username)
+              ELSE NULL
+            END as approver_name
+          FROM booking_history bh
+          JOIN rooms r ON bh.room_id = r.room_id
+          JOIN time_slots ts ON bh.slot_id = ts.slot_id
+          LEFT JOIN users u_approver ON bh.approver_id = u_approver.user_id
+          WHERE bh.user_id = ?
+          ORDER BY bh.booking_date DESC, ts.time_period`;
+        break;
+
+      case 'lecturer':
+        // Lecturers see: Room name, Date, Time slot, status, reject reason, student name
+        query = `
+          SELECT 
+            bh.history_id,
+            r.room_name,
+            bh.booking_date,
+            ts.time_period,
+            bh.status,
+            CASE 
+              WHEN bh.status = 'rejected' THEN bh.reason
+              ELSE NULL
+            END as reject_reason,
+            u_student.username as student_name
+          FROM booking_history bh
+          JOIN rooms r ON bh.room_id = r.room_id
+          JOIN time_slots ts ON bh.slot_id = ts.slot_id
+          JOIN users u_student ON bh.user_id = u_student.user_id
+          WHERE bh.approver_id = ?
+          ORDER BY bh.booking_date DESC, ts.time_period`;
+        break;
+
+      case 'staff':
+        // Staff see: Room name, Date, Time slot, status, reject reason, approver name
+        query = `
+          SELECT 
+            bh.history_id,
+            r.room_name,
+            bh.booking_date,
+            ts.time_period,
+            bh.status,
+            CASE 
+              WHEN bh.status = 'rejected' THEN bh.reason
+              ELSE NULL
+            END as reject_reason,
+            CASE 
+              WHEN bh.approver_id IS NOT NULL THEN CONCAT(u_approver.username)
+              ELSE NULL
+            END as approver_name
+          FROM booking_history bh
+          JOIN rooms r ON bh.room_id = r.room_id
+          JOIN time_slots ts ON bh.slot_id = ts.slot_id
+          LEFT JOIN users u_approver ON bh.approver_id = u_approver.user_id
+          WHERE r.created_by = ?
+          ORDER BY bh.booking_date DESC, ts.time_period`;
+        break;
+
+      default:
+        return res.status(400).json({ error: 'Invalid role specified' });
+    }
+
+    const [rows] = await con.execute(query, [userId]);
     res.json(rows);
   } catch (err) {
     console.error('listUserBookings error:', err);
