@@ -69,15 +69,30 @@ async function createRoom(req, res) {
       "15:00-17:00",
     ];
     try {
-      const placeholders = defaultSlots.map(() => "(?, ?)").join(", ");
+      // If time_slots table has a status column, insert default status for each slot
+      // We'll attempt to insert (room_id, time_period, status). If the column doesn't exist,
+      // fall back to inserting without status.
       const params = [];
-      defaultSlots.forEach((p) => {
-        params.push(roomId, p);
-      });
-      await con.execute(
-        `INSERT INTO time_slots (room_id, time_period) VALUES ${placeholders}`,
-        params
-      );
+      const hasStatusInsert = true; // assume new schema includes status
+      if (hasStatusInsert) {
+        const placeholders = defaultSlots.map(() => '(?, ?, ?)').join(', ');
+        defaultSlots.forEach((p) => {
+          params.push(roomId, p, 'Free');
+        });
+        await con.execute(
+          `INSERT INTO time_slots (room_id, time_period, status) VALUES ${placeholders}`,
+          params
+        );
+      } else {
+        const placeholders = defaultSlots.map(() => '(?, ?)').join(', ');
+        defaultSlots.forEach((p) => {
+          params.push(roomId, p);
+        });
+        await con.execute(
+          `INSERT INTO time_slots (room_id, time_period) VALUES ${placeholders}`,
+          params
+        );
+      }
     } catch (slotErr) {
       console.error("createRoom - inserting default slots error:", slotErr);
       // not fatal for room creation; continue but warn
@@ -166,7 +181,7 @@ async function listTimeSlots(req, res) {
   try {
     const con = await getConnection();
     const [rows] = await con.execute(
-      "SELECT slot_id, room_id, time_period FROM time_slots WHERE room_id = ?",
+      "SELECT slot_id, room_id, time_period, status as time_slot_status FROM time_slots WHERE room_id = ?",
       [roomId]
     );
     res.json(rows);
@@ -188,7 +203,7 @@ async function createBooking(req, res) {
   try {
     const con = await getConnection();
     const [result] = await con.execute(
-      "INSERT INTO booking_history (user_id, room_id, slot_id, booking_date, reason, status) VALUES (?, ?, ?, ?, ?, 'pending')",
+      "INSERT INTO booking_history (user_id, room_id, slot_id, booking_date, reason, status) VALUES (?, ?, ?, ?, ?, 'Pending')",
       [user_id, room_id, slot_id, booking_date, reason || null]
     );
     res
@@ -200,7 +215,7 @@ async function createBooking(req, res) {
         slot_id,
         booking_date,
         reason,
-        status: "pending",
+        status: "Pending",
       });
   } catch (err) {
     console.error("createBooking error:", err);
@@ -227,6 +242,7 @@ async function listUserBookings(req, res) {
             r.room_name,
             bh.booking_date,
             ts.time_period,
+            ts.status as time_slot_status,
             bh.status,
             CASE 
               WHEN bh.status = 'rejected' THEN bh.reason
@@ -252,6 +268,7 @@ async function listUserBookings(req, res) {
             r.room_name,
             bh.booking_date,
             ts.time_period,
+            ts.status as time_slot_status,
             bh.status,
             CASE 
               WHEN bh.status = 'rejected' THEN bh.reason
@@ -274,6 +291,7 @@ async function listUserBookings(req, res) {
             r.room_name,
             bh.booking_date,
             ts.time_period,
+            ts.status as time_slot_status,
             bh.status,
             CASE 
               WHEN bh.status = 'rejected' THEN bh.reason
