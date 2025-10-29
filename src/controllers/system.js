@@ -3,8 +3,9 @@ const { getConnection } = require("../config/db.js");
 // System controller for room booking: rooms, time slots, bookings
 
 async function listRooms(req, res) {
+  let con;
   try {
-    const con = await getConnection();
+    con = await getConnection();
     // Select the new status column
     const [rows] = await con.execute(
       "SELECT room_id, room_name, room_description, created_by, status FROM rooms"
@@ -13,14 +14,17 @@ async function listRooms(req, res) {
   } catch (err) {
     console.error("listRooms error:", err);
     res.status(500).json({ error: "Database error" });
+  } finally {
+    if (con) con.release();
   }
 }
 
 async function getRoom(req, res) {
   const { id } = req.params;
   if (!id) return res.status(400).json({ error: "room id is required" });
+  let con;
   try {
-    const con = await getConnection();
+    con = await getConnection();
     // Also select status here
     const [rows] = await con.execute(
       "SELECT room_id, room_name, room_description, created_by, status FROM rooms WHERE room_id = ?",
@@ -32,6 +36,8 @@ async function getRoom(req, res) {
   } catch (err) {
     console.error("getRoom error:", err);
     res.status(500).json({ error: "Database error" });
+  } finally {
+    if (con) con.release();
   }
 }
 
@@ -47,8 +53,9 @@ async function createRoom(req, res) {
   if (!["Available", "Disable"].includes(status))
     return res.status(400).json({ error: "Invalid status value" });
 
+  let con;
   try {
-    const con = await getConnection();
+    con = await getConnection();
     // INSERT the new status
     const [result] = await con.execute(
       "INSERT INTO rooms (room_name, room_description, created_by, status) VALUES (?, ?, ?, ?)",
@@ -59,7 +66,7 @@ async function createRoom(req, res) {
         status, // Add status here
       ]
     );
-    
+
     // after creating room, insert default 4 time slots for that room
     const roomId = result.insertId;
     const defaultSlots = [
@@ -70,21 +77,21 @@ async function createRoom(req, res) {
     ];
     try {
       // If time_slots table has a status column, insert default status for each slot
-      // We'll attempt to insert (room_id, time_period, status). If the column doesn't exist,
-      // fall back to inserting without status.
+      // We'll attempt to insert (room_id, time_period, status).
       const params = [];
       const hasStatusInsert = true; // assume new schema includes status
       if (hasStatusInsert) {
-        const placeholders = defaultSlots.map(() => '(?, ?, ?)').join(', ');
+        const placeholders = defaultSlots.map(() => "(?, ?, ?)").join(", ");
         defaultSlots.forEach((p) => {
-          params.push(roomId, p, 'Free');
+          params.push(roomId, p, "Free");
         });
         await con.execute(
           `INSERT INTO time_slots (room_id, time_period, status) VALUES ${placeholders}`,
           params
         );
       } else {
-        const placeholders = defaultSlots.map(() => '(?, ?)').join(', ');
+        // Fallback if time_slots doesn't have status (legacy)
+        const placeholders = defaultSlots.map(() => "(?, ?)").join(", ");
         defaultSlots.forEach((p) => {
           params.push(roomId, p);
         });
@@ -111,6 +118,8 @@ async function createRoom(req, res) {
       return res.status(409).json({ error: "Room name already exists" });
     }
     res.status(500).json({ error: "Database error" });
+  } finally {
+    if (con) con.release();
   }
 }
 
@@ -125,8 +134,9 @@ async function updateRoom(req, res) {
     return res.status(400).json({ error: "Invalid status value" });
   }
 
+  let con;
   try {
-    const con = await getConnection();
+    con = await getConnection();
     // UPDATE the new status column
     const [result] = await con.execute(
       "UPDATE rooms SET room_name = COALESCE(?, room_name), room_description = COALESCE(?, room_description), status = COALESCE(?, status) WHERE room_id = ?",
@@ -143,6 +153,8 @@ async function updateRoom(req, res) {
   } catch (err) {
     console.error("updateRoom error:", err);
     res.status(500).json({ error: "Database error" });
+  } finally {
+    if (con) con.release();
   }
 }
 
@@ -172,14 +184,17 @@ async function deleteRoom(req, res) {
       console.error("Rollback error:", e);
     }
     res.status(500).json({ error: "Database error" });
+  } finally {
+    if (con) con.release();
   }
 }
 
 async function listTimeSlots(req, res) {
   const roomId = req.params?.roomId || req.query?.roomId;
   if (!roomId) return res.status(400).json({ error: "roomId is required" });
+  let con;
   try {
-    const con = await getConnection();
+    con = await getConnection();
     const [rows] = await con.execute(
       "SELECT slot_id, room_id, time_period, status as time_slot_status FROM time_slots WHERE room_id = ?",
       [roomId]
@@ -188,6 +203,8 @@ async function listTimeSlots(req, res) {
   } catch (err) {
     console.error("listTimeSlots error:", err);
     res.status(500).json({ error: "Database error" });
+  } finally {
+    if (con) con.release();
   }
 }
 
@@ -200,8 +217,9 @@ async function createBooking(req, res) {
         error: "user_id, room_id, slot_id and booking_date are required",
       });
   }
+  let con;
   try {
-    const con = await getConnection();
+    con = await getConnection();
     const [result] = await con.execute(
       "INSERT INTO booking_history (user_id, room_id, slot_id, booking_date, reason, status) VALUES (?, ?, ?, ?, ?, 'Pending')",
       [user_id, room_id, slot_id, booking_date, reason || null]
@@ -220,6 +238,8 @@ async function createBooking(req, res) {
   } catch (err) {
     console.error("createBooking error:", err);
     res.status(500).json({ error: "Database error" });
+  } finally {
+    if (con) con.release();
   }
 }
 
@@ -229,8 +249,9 @@ async function listUserBookings(req, res) {
   if (!userId || !userRole)
     return res.status(400).json({ error: "userId and role are required" });
 
+  let con;
   try {
-    const con = await getConnection();
+    con = await getConnection();
     let query = "";
 
     switch (userRole) {
@@ -318,6 +339,8 @@ async function listUserBookings(req, res) {
   } catch (err) {
     console.error("listUserBookings error:", err);
     res.status(500).json({ error: "Database error" });
+  } finally {
+    if (con) con.release();
   }
 }
 
@@ -332,8 +355,10 @@ async function approveBooking(req, res) {
     return res
       .status(400)
       .json({ error: "action must be approved or rejected" });
+
+  let con;
   try {
-    const con = await getConnection();
+    con = await getConnection();
     const [result] = await con.execute(
       "UPDATE booking_history SET status = ?, approver_id = ?, approved_at = CURRENT_TIMESTAMP WHERE history_id = ?",
       [action, approver_id, history_id]
@@ -344,6 +369,8 @@ async function approveBooking(req, res) {
   } catch (err) {
     console.error("approveBooking error:", err);
     res.status(500).json({ error: "Database error" });
+  } finally {
+    if (con) con.release();
   }
 }
 

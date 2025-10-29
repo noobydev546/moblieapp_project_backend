@@ -9,7 +9,10 @@ app.use(cors());
 app.use(express.json());
 app.use(morgan('dev'));
 
-readdirSync('src/routes')
-    .map((c) => app.use('/api', require('./routes/' + c)))
+const systemRoutes = require('./routes/system.js');
+const authRoutes = require('./routes/auth.js');
+
+app.use('/api/auth', authRoutes);
+app.use('/api', systemRoutes);
 
 module.exports = app;
