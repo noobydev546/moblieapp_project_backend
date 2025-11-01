@@ -2,25 +2,25 @@ const { getConnection } = require("../config/db.js");
 const bcrypt = require("bcrypt");
 
 async function login(req, res) {
-  // 'username' field can now contain either username or email
+  // <-- CHANGED: Only 'username' and 'password' are expected
   const { username, password } = req.body;
   if (!username || !password) {
     return res
       .status(400)
       // <-- CHANGED: Updated error message
-      .json({ error: "username/email and password are required" });
+      .json({ error: "username and password are required" });
   }
 
-  // <-- CHANGED: Updated SQL query
-  const sql = "SELECT * FROM `users` WHERE username = ? OR email = ?";
+  // <-- CHANGED: Updated SQL query to only check username
+  const sql = "SELECT * FROM `users` WHERE username = ?";
   let con;
   try {
     con = await getConnection();
-    // <-- CHANGED: Pass the input for both 'username' and 'email'
-    const [results] = await con.execute(sql, [username, username]);
+    // <-- CHANGED: Pass only the username
+    const [results] = await con.execute(sql, [username]);
 
     if (results.length !== 1) {
-      // No user found with that username or email
+      // No user found with that username
       return res.status(401).json({ error: "Invalid credentials" });
     }
 

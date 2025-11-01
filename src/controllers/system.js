@@ -221,7 +221,7 @@ async function createBooking(req, res) {
   try {
     con = await getConnection();
     const [result] = await con.execute(
-      "INSERT INTO booking_history (user_id, room_id, slot_id, booking_date, reason, status) VALUES (?, ?, ?, ?, ?, 'Pending')",
+      "INSERT INTO booking_history (user_id, room_id, slot_id, booking_date, reason, status) VALUES (?, ?, ?, ?, ?, 'pending')",
       [user_id, room_id, slot_id, booking_date, reason || null]
     );
     res
@@ -233,7 +233,7 @@ async function createBooking(req, res) {
         slot_id,
         booking_date,
         reason,
-        status: "Pending",
+        status: "pending",
       });
   } catch (err) {
     console.error("createBooking error:", err);
