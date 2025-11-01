@@ -1,5 +1,5 @@
 const { getConnection } = require("../config/db.js");
-const bcrypt = require("bcrypt"); // <-- ADDED: For addLecturer
+const bcrypt = require("bcrypt"); // For addLecturer
 
 // System controller for room booking: rooms, time slots, bookings
 
@@ -209,6 +209,7 @@ async function listTimeSlots(req, res) {
   }
 }
 
+// --- UPDATED: createBooking ---
 async function createBooking(req, res) {
   const { user_id, room_id, slot_id, booking_date, reason } = req.body;
   if (!user_id || !room_id || !slot_id || !booking_date) {
@@ -218,13 +219,28 @@ async function createBooking(req, res) {
         error: "user_id, room_id, slot_id and booking_date are required",
       });
   }
+
   let con;
   try {
     con = await getConnection();
+    // --- Start Transaction ---
+    await con.beginTransaction();
+
+    // 1. Insert into booking_history
     const [result] = await con.execute(
       "INSERT INTO booking_history (user_id, room_id, slot_id, booking_date, reason, status) VALUES (?, ?, ?, ?, ?, 'pending')",
       [user_id, room_id, slot_id, booking_date, reason || null]
     );
+
+    // 2. Update time_slots status to 'Pending'
+    await con.execute(
+      "UPDATE time_slots SET status = 'Pending' WHERE slot_id = ?",
+      [slot_id]
+    );
+
+    // --- Commit Transaction ---
+    await con.commit();
+
     res
       .status(201)
       .json({
@@ -238,11 +254,20 @@ async function createBooking(req, res) {
       });
   } catch (err) {
     console.error("createBooking error:", err);
-    res.status(500).json({ error: "Database error" });
+    // --- Rollback on error ---
+    if (con) {
+      try {
+        await con.rollback();
+      } catch (rollBackErr) {
+        console.error("createBooking rollback error:", rollBackErr);
+      }
+    }
+    res.status(500).json({ error: "Database error during booking" });
   } finally {
     if (con) con.release();
   }
 }
+// --- END OF UPDATE ---
 
 async function listUserBookings(req, res) {
   const userId = req.params?.userId || req.query?.userId || req.body?.user_id;
@@ -345,6 +370,7 @@ async function listUserBookings(req, res) {
   }
 }
 
+// --- UPDATED: approveBooking ---
 async function approveBooking(req, res) {
   const { history_id } = req.params;
   const { approver_id, action } = req.body; // action: 'approved' or 'rejected'
@@ -360,25 +386,63 @@ async function approveBooking(req, res) {
   let con;
   try {
     con = await getConnection();
+    // --- Start Transaction ---
+    await con.beginTransaction();
+
+    // 1. Get the slot_id from the booking
+    const [bookingRows] = await con.execute(
+      "SELECT slot_id FROM booking_history WHERE history_id = ? FOR UPDATE", // Lock row
+      [history_id]
+    );
+
+    if (bookingRows.length === 0) {
+      await con.rollback();
+      return res.status(404).json({ error: "Booking not found" });
+    }
+    const slot_id = bookingRows[0].slot_id;
+
+    // 2. Update the booking_history table
     const [result] = await con.execute(
       "UPDATE booking_history SET status = ?, approver_id = ?, approved_at = CURRENT_TIMESTAMP WHERE history_id = ?",
       [action, approver_id, history_id]
     );
-    if (result.affectedRows === 0)
+
+    if (result.affectedRows === 0) {
+      // Should be caught by the SELECT above, but as a safeguard
+      await con.rollback();
       return res.status(404).json({ error: "Booking not found" });
+    }
+
+    // 3. Update the time_slots table based on the action
+    const newSlotStatus = action === 'approved' ? 'Reserved' : 'Free';
+    await con.execute(
+      "UPDATE time_slots SET status = ? WHERE slot_id = ?",
+      [newSlotStatus, slot_id]
+    );
+
+    // --- Commit Transaction ---
+    await con.commit();
+
     res.json({ message: `Booking ${action}` });
   } catch (err) {
     console.error("approveBooking error:", err);
-    res.status(500).json({ error: "Database error" });
+    // --- Rollback on error ---
+    if (con) {
+      try {
+        await con.rollback();
+      } catch (rollBackErr) {
+        console.error("approveBooking rollback error:", rollBackErr);
+      }
+    }
+    res.status(500).json({ error: "Database error during approval" });
   } finally {
     if (con) con.release();
   }
 }
+// --- END OF UPDATE ---
 
-// <-- NEW FUNCTION ADDED -->
+// This function is for 'staff' roles to add new 'lecturer' users
 async function addLecturer(req, res) {
-  // This function is intended to be used by 'staff' roles
-  // It registers a new user with the 'lecturer' role.
   const { username, email, password, confirmPassword } = req.body;
   if (!username || !email || !password || !confirmPassword) {
     return res
@@ -417,7 +481,8 @@ async function addLecturer(req, res) {
     return res
       .status(201)
       .json({ id: result.insertId, username, email, role: userRole });
-  } catch (err) {
+  } catch (err)
+ {
     console.error("addLecturer error:", err);
     return res.status(500).json({ error: "Database error" });
   } finally {
@@ -436,5 +501,6 @@ module.exports = {
   createBooking,
   listUserBookings,
   approveBooking,
-  addLecturer, // <-- ADDED: Export new function
+  addLecturer, // Export new function
 };
+
