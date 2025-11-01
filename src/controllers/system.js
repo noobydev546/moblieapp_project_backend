@@ -1,4 +1,5 @@
 const { getConnection } = require("../config/db.js");
+const bcrypt = require("bcrypt"); // <-- ADDED: For addLecturer
 
 // System controller for room booking: rooms, time slots, bookings
 
@@ -374,6 +375,57 @@ async function approveBooking(req, res) {
   }
 }
 
+// <-- NEW FUNCTION ADDED -->
+async function addLecturer(req, res) {
+  // This function is intended to be used by 'staff' roles
+  // It registers a new user with the 'lecturer' role.
+  const { username, email, password, confirmPassword } = req.body;
+  if (!username || !email || !password || !confirmPassword) {
+    return res
+      .status(400)
+      .json({
+        error: "username, email, password and confirmPassword are required",
+      });
+  }
+  if (password !== confirmPassword) {
+    return res
+      .status(400)
+      .json({ error: "password and confirmPassword do not match" });
+  }
+
+  let con;
+  try {
+    con = await getConnection();
+    // check if username or email already exists
+    const [existing] = await con.execute(
+      "SELECT user_id FROM users WHERE username = ? OR email = ?",
+      [username, email]
+    );
+    if (existing.length > 0) {
+      return res.status(409).json({ error: "username or email already exists" });
+    }
+
+    const hashed = await bcrypt.hash(password, 10);
+    // Role is hardcoded to 'lecturer'
+    const userRole = "lecturer";
+
+    const [result] = await con.execute(
+      "INSERT INTO users (username, password, email, role) VALUES (?, ?, ?, ?)",
+      [username, hashed, email, userRole]
+    );
+
+    return res
+      .status(201)
+      .json({ id: result.insertId, username, email, role: userRole });
+  } catch (err) {
+    console.error("addLecturer error:", err);
+    return res.status(500).json({ error: "Database error" });
+  } finally {
+    if (con) con.release();
+  }
+}
+
+
 module.exports = {
   listRooms,
   getRoom,
@@ -384,4 +436,5 @@ module.exports = {
   createBooking,
   listUserBookings,
   approveBooking,
+  addLecturer, // <-- ADDED: Export new function
 };
