@@ -223,6 +223,22 @@ async function createBooking(req, res) {
   let con;
   try {
     con = await getConnection();
+
+    // --- NEW VALIDATION STEP ---
+    // Check if the user already has a pending or approved booking for this date.
+    const [existingBookings] = await con.execute(
+      "SELECT history_id FROM booking_history WHERE user_id = ? AND booking_date = ? AND (status = 'pending' OR status = 'approved')",
+      [user_id, booking_date]
+    );
+
+    if (existingBookings.length > 0) {
+      return res
+        .status(409) // 409 Conflict
+        .json({ error: "You already have an active or approved booking for this date. You can only make a new request if your previous one is rejected." });
+    }
+    // --- END OF NEW VALIDATION STEP ---
+
+
     // --- Start Transaction ---
     await con.beginTransaction();
 
