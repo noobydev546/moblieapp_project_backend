@@ -9,7 +9,8 @@ const {
   createBooking,
   listUserBookings,
   approveBooking,
-  addLecturer, // <-- ADDED: Import addLecturer
+  addLecturer,
+  changePassword, // This is correctly imported
 } = require("../controllers/system.js");
 
 const router = Router();
@@ -29,7 +30,10 @@ router.post("/bookings", createBooking);
 router.get("/bookings/user/:userId", listUserBookings);
 router.post("/bookings/:history_id/approve", approveBooking);
 
-// <-- ADDED: New route for adding lecturers -->
+// New route for adding lecturers
 router.post("/lecturers", addLecturer);
+
+// Route for changing password
+router.put('/user/password', changePassword); // This is correct
 
 module.exports = router;

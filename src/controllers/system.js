@@ -1,5 +1,5 @@
 const { getConnection } = require("../config/db.js");
-const bcrypt = require("bcrypt"); // For addLecturer
+const bcrypt = require("bcrypt"); // For addLecturer and changePassword
 
 // System controller for room booking: rooms, time slots, bookings
 
@@ -7,7 +7,6 @@ async function listRooms(req, res) {
   let con;
   try {
     con = await getConnection();
-    // Select the new status column
     const [rows] = await con.execute(
       "SELECT room_id, room_name, room_description, created_by, status FROM rooms"
     );
@@ -26,7 +25,6 @@ async function getRoom(req, res) {
   let con;
   try {
     con = await getConnection();
-    // Also select status here
     const [rows] = await con.execute(
       "SELECT room_id, room_name, room_description, created_by, status FROM rooms WHERE room_id = ?",
       [id]
@@ -43,10 +41,8 @@ async function getRoom(req, res) {
 }
 
 async function createRoom(req, res) {
-  // Get status from the request body
   const { room_name, room_description, created_by, status } = req.body;
 
-  // Add validation for status
   if (!room_name)
     return res.status(400).json({ error: "room_name is required" });
   if (!status)
@@ -57,18 +53,16 @@ async function createRoom(req, res) {
   let con;
   try {
     con = await getConnection();
-    // INSERT the new status
     const [result] = await con.execute(
       "INSERT INTO rooms (room_name, room_description, created_by, status) VALUES (?, ?, ?, ?)",
       [
         room_name,
         room_description || null,
         created_by || null,
-        status, // Add status here
+        status,
       ]
     );
 
-    // after creating room, insert default 4 time slots for that room
     const roomId = result.insertId;
     const defaultSlots = [
       "08:00-10:00",
@@ -77,33 +71,17 @@ async function createRoom(req, res) {
       "15:00-17:00",
     ];
     try {
-      // If time_slots table has a status column, insert default status for each slot
-      // We'll attempt to insert (room_id, time_period, status).
       const params = [];
-      const hasStatusInsert = true; // assume new schema includes status
-      if (hasStatusInsert) {
-        const placeholders = defaultSlots.map(() => "(?, ?, ?)").join(", ");
-        defaultSlots.forEach((p) => {
-          params.push(roomId, p, "Free");
-        });
-        await con.execute(
-          `INSERT INTO time_slots (room_id, time_period, status) VALUES ${placeholders}`,
-          params
-        );
-      } else {
-        // Fallback if time_slots doesn't have status (legacy)
-        const placeholders = defaultSlots.map(() => "(?, ?)").join(", ");
-        defaultSlots.forEach((p) => {
-          params.push(roomId, p);
-        });
-        await con.execute(
-          `INSERT INTO time_slots (room_id, time_period) VALUES ${placeholders}`,
-          params
-        );
-      }
+      const placeholders = defaultSlots.map(() => "(?, ?, ?)").join(", ");
+      defaultSlots.forEach((p) => {
+        params.push(roomId, p, "Free");
+      });
+      await con.execute(
+        `INSERT INTO time_slots (room_id, time_period, status) VALUES ${placeholders}`,
+        params
+      );
     } catch (slotErr) {
       console.error("createRoom - inserting default slots error:", slotErr);
-      // not fatal for room creation; continue but warn
     }
 
     res.status(201).json({
@@ -111,7 +89,7 @@ async function createRoom(req, res) {
       room_name,
       room_description,
       created_by,
-      status, // Include status in response
+      status,
     });
   } catch (err) {
     console.error("createRoom error:", err);
@@ -126,11 +104,9 @@ async function createRoom(req, res) {
 
 async function updateRoom(req, res) {
   const { id } = req.params;
-  // Get status from the request body
   const { room_name, room_description, status } = req.body;
   if (!id) return res.status(400).json({ error: "room id is required" });
 
-  // Optional: Validate status if provided
   if (status && !["Available", "Disable"].includes(status)) {
     return res.status(400).json({ error: "Invalid status value" });
   }
@@ -138,13 +114,12 @@ async function updateRoom(req, res) {
   let con;
   try {
     con = await getConnection();
-    // UPDATE the new status column
     const [result] = await con.execute(
       "UPDATE rooms SET room_name = COALESCE(?, room_name), room_description = COALESCE(?, room_description), status = COALESCE(?, status) WHERE room_id = ?",
       [
         room_name,
         room_description,
-        status, // Add status here
+        status,
         id,
       ]
     );
@@ -162,10 +137,9 @@ async function updateRoom(req, res) {
 async function deleteRoom(req, res) {
   const { id } = req.params;
   if (!id) return res.status(400).json({ error: "room id is required" });
-  let con; // Define connection outside try block for rollback access
+  let con;
   try {
     con = await getConnection();
-    // ensure atomic delete: remove time_slots then room (DB has FK with cascade but play safe)
     await con.beginTransaction();
     await con.execute("DELETE FROM time_slots WHERE room_id = ?", [id]);
     const [result] = await con.execute("DELETE FROM rooms WHERE room_id = ?", [
@@ -180,7 +154,7 @@ async function deleteRoom(req, res) {
   } catch (err) {
     console.error("deleteRoom error:", err);
     try {
-      if (con) await con.rollback(); // Rollback on error
+      if (con) await con.rollback();
     } catch (e) {
       console.error("Rollback error:", e);
     }
@@ -209,7 +183,6 @@ async function listTimeSlots(req, res) {
   }
 }
 
-// --- UPDATED: createBooking ---
 async function createBooking(req, res) {
   const { user_id, room_id, slot_id, booking_date, reason } = req.body;
   if (!user_id || !room_id || !slot_id || !booking_date) {
@@ -224,8 +197,6 @@ async function createBooking(req, res) {
   try {
     con = await getConnection();
 
-    // --- NEW VALIDATION STEP ---
-    // Check if the user already has a pending or approved booking for this date.
     const [existingBookings] = await con.execute(
       "SELECT history_id FROM booking_history WHERE user_id = ? AND booking_date = ? AND (status = 'pending' OR status = 'approved')",
       [user_id, booking_date]
@@ -233,28 +204,22 @@ async function createBooking(req, res) {
 
     if (existingBookings.length > 0) {
       return res
-        .status(409) // 409 Conflict
+        .status(409)
         .json({ error: "You already have an active or approved booking for this date. You can only make a new request if your previous one is rejected." });
     }
-    // --- END OF NEW VALIDATION STEP ---
 
-
-    // --- Start Transaction ---
     await con.beginTransaction();
 
-    // 1. Insert into booking_history
     const [result] = await con.execute(
       "INSERT INTO booking_history (user_id, room_id, slot_id, booking_date, reason, status) VALUES (?, ?, ?, ?, ?, 'pending')",
       [user_id, room_id, slot_id, booking_date, reason || null]
     );
 
-    // 2. Update time_slots status to 'Pending'
     await con.execute(
       "UPDATE time_slots SET status = 'Pending' WHERE slot_id = ?",
       [slot_id]
     );
 
-    // --- Commit Transaction ---
     await con.commit();
 
     res
@@ -270,7 +235,6 @@ async function createBooking(req, res) {
       });
   } catch (err) {
     console.error("createBooking error:", err);
-    // --- Rollback on error ---
     if (con) {
       try {
         await con.rollback();
@@ -283,11 +247,10 @@ async function createBooking(req, res) {
     if (con) con.release();
   }
 }
-// --- END OF UPDATE ---
 
 async function listUserBookings(req, res) {
   const userId = req.params?.userId || req.query?.userId || req.body?.user_id;
-  const userRole = req.query?.role; // 'student', 'lecturer', or 'staff'
+  const userRole = req.query?.role;
   if (!userId || !userRole)
     return res.status(400).json({ error: "userId and role are required" });
 
@@ -295,10 +258,10 @@ async function listUserBookings(req, res) {
   try {
     con = await getConnection();
     let query = "";
+    let params = [userId]; // Default params
 
     switch (userRole) {
       case "student":
-        // Students see: Room name, Date, Time slot, status, reject reason, approver name
         query = `
           SELECT 
             bh.history_id,
@@ -324,7 +287,8 @@ async function listUserBookings(req, res) {
         break;
 
       case "lecturer":
-        // Lecturers see: Room name, Date, Time slot, status, reject reason, student name
+        // This query is for "pending requests" for a lecturer
+        // It joins users to get the student name
         query = `
           SELECT 
             bh.history_id,
@@ -333,21 +297,18 @@ async function listUserBookings(req, res) {
             ts.time_period,
             ts.status as time_slot_status,
             bh.status,
-            CASE 
-              WHEN bh.status = 'rejected' THEN bh.reason
-              ELSE NULL
-            END as reject_reason,
             u_student.username as student_name
           FROM booking_history bh
           JOIN rooms r ON bh.room_id = r.room_id
           JOIN time_slots ts ON bh.slot_id = ts.slot_id
           JOIN users u_student ON bh.user_id = u_student.user_id
-          WHERE bh.approver_id = ?
-          ORDER BY bh.booking_date DESC, ts.time_period`;
+          WHERE bh.status = 'pending'
+          ORDER BY bh.booking_date ASC, ts.time_period`;
+        params = []; // No userId needed for this query
         break;
 
       case "staff":
-        // Staff see: Room name, Date, Time slot, status, reject reason, approver name
+        // Staff see: Room name, Date, Time slot, status, student name, etc.
         query = `
           SELECT 
             bh.history_id,
@@ -356,6 +317,7 @@ async function listUserBookings(req, res) {
             ts.time_period,
             ts.status as time_slot_status,
             bh.status,
+            u_student.username as student_name,
             CASE 
               WHEN bh.status = 'rejected' THEN bh.reason
               ELSE NULL
@@ -368,6 +330,7 @@ async function listUserBookings(req, res) {
           JOIN rooms r ON bh.room_id = r.room_id
           JOIN time_slots ts ON bh.slot_id = ts.slot_id
           LEFT JOIN users u_approver ON bh.approver_id = u_approver.user_id
+          JOIN users u_student ON bh.user_id = u_student.user_id
           WHERE r.created_by = ?
           ORDER BY bh.booking_date DESC, ts.time_period`;
         break;
@@ -376,7 +339,7 @@ async function listUserBookings(req, res) {
         return res.status(400).json({ error: "Invalid role specified" });
     }
 
-    const [rows] = await con.execute(query, [userId]);
+    const [rows] = await con.execute(query, params);
     res.json(rows);
   } catch (err) {
     console.error("listUserBookings error:", err);
@@ -386,10 +349,9 @@ async function listUserBookings(req, res) {
   }
 }
 
-// --- UPDATED: approveBooking ---
 async function approveBooking(req, res) {
   const { history_id } = req.params;
-  const { approver_id, action } = req.body; // action: 'approved' or 'rejected'
+  const { approver_id, action, reason } = req.body; // Added 'reason'
   if (!history_id || !approver_id || !action)
     return res
       .status(400)
@@ -398,16 +360,17 @@ async function approveBooking(req, res) {
     return res
       .status(400)
       .json({ error: "action must be approved or rejected" });
+  if (action === 'rejected' && (!reason || reason.trim().isEmpty)) {
+     return res.status(400).json({ error: "reason is required for rejection" });
+  }
 
   let con;
   try {
     con = await getConnection();
-    // --- Start Transaction ---
     await con.beginTransaction();
 
-    // 1. Get the slot_id from the booking
     const [bookingRows] = await con.execute(
-      "SELECT slot_id FROM booking_history WHERE history_id = ? FOR UPDATE", // Lock row
+      "SELECT slot_id, status FROM booking_history WHERE history_id = ? FOR UPDATE",
       [history_id]
     );
 
@@ -415,34 +378,37 @@ async function approveBooking(req, res) {
       await con.rollback();
       return res.status(404).json({ error: "Booking not found" });
     }
+    
+    if (bookingRows[0].status !== 'pending') {
+      await con.rollback();
+      return res.status(409).json({ error: "This booking has already been processed." });
+    }
+
     const slot_id = bookingRows[0].slot_id;
 
-    // 2. Update the booking_history table
+    // Update the 'reason' column only if rejecting
+    const updateReason = action === 'rejected' ? reason : null;
     const [result] = await con.execute(
-      "UPDATE booking_history SET status = ?, approver_id = ?, approved_at = CURRENT_TIMESTAMP WHERE history_id = ?",
-      [action, approver_id, history_id]
+      "UPDATE booking_history SET status = ?, approver_id = ?, approved_at = CURRENT_TIMESTAMP, reason = ? WHERE history_id = ?",
+      [action, approver_id, updateReason, history_id]
     );
 
     if (result.affectedRows === 0) {
-      // Should be caught by the SELECT above, but as a safeguard
       await con.rollback();
       return res.status(404).json({ error: "Booking not found" });
     }
 
-    // 3. Update the time_slots table based on the action
     const newSlotStatus = action === 'approved' ? 'Reserved' : 'Free';
     await con.execute(
       "UPDATE time_slots SET status = ? WHERE slot_id = ?",
       [newSlotStatus, slot_id]
     );
 
-    // --- Commit Transaction ---
     await con.commit();
 
     res.json({ message: `Booking ${action}` });
   } catch (err) {
     console.error("approveBooking error:", err);
-    // --- Rollback on error ---
     if (con) {
       try {
         await con.rollback();
@@ -455,9 +421,7 @@ async function approveBooking(req, res) {
     if (con) con.release();
   }
 }
-// --- END OF UPDATE ---
 
-// This function is for 'staff' roles to add new 'lecturer' users
 async function addLecturer(req, res) {
   const { username, email, password, confirmPassword } = req.body;
   if (!username || !email || !password || !confirmPassword) {
@@ -476,7 +440,6 @@ async function addLecturer(req, res) {
   let con;
   try {
     con = await getConnection();
-    // check if username or email already exists
     const [existing] = await con.execute(
       "SELECT user_id FROM users WHERE username = ? OR email = ?",
       [username, email]
@@ -486,7 +449,6 @@ async function addLecturer(req, res) {
     }
 
     const hashed = await bcrypt.hash(password, 10);
-    // Role is hardcoded to 'lecturer'
     const userRole = "lecturer";
 
     const [result] = await con.execute(
@@ -497,8 +459,7 @@ async function addLecturer(req, res) {
     return res
       .status(201)
       .json({ id: result.insertId, username, email, role: userRole });
-  } catch (err)
- {
+  } catch (err) {
     console.error("addLecturer error:", err);
     return res.status(500).json({ error: "Database error" });
   } finally {
@@ -506,6 +467,49 @@ async function addLecturer(req, res) {
   }
 }
 
+async function changePassword(req, res) {
+  const { user_id, oldPassword, newPassword } = req.body;
+  if (!user_id || !oldPassword || !newPassword) {
+    return res
+      .status(400)
+      .json({ error: "user_id, oldPassword, and newPassword are required" });
+  }
+
+  let con;
+  try {
+    con = await getConnection();
+    const [users] = await con.execute(
+      "SELECT password FROM users WHERE user_id = ?",
+      [user_id]
+    );
+
+    if (users.length === 0) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    const currentHashedPassword = users[0].password;
+
+    const isMatch = await bcrypt.compare(oldPassword, currentHashedPassword);
+
+    if (!isMatch) {
+      return res.status(401).json({ error: "Incorrect old password" });
+    }
+
+    const newHashedPassword = await bcrypt.hash(newPassword, 10);
+
+    await con.execute("UPDATE users SET password = ? WHERE user_id = ?", [
+      newHashedPassword,
+      user_id,
+    ]);
+
+    res.json({ message: "Password updated successfully" });
+  } catch (err) {
+    console.error("changePassword error:", err);
+    res.status(500).json({ error: "Database error" });
+  } finally {
+    if (con) con.release();
+  }
+}
 
 module.exports = {
   listRooms,
@@ -517,6 +521,6 @@ module.exports = {
   createBooking,
   listUserBookings,
   approveBooking,
-  addLecturer, // Export new function
+  addLecturer,
+  changePassword,
 };
-
