@@ -4,9 +4,9 @@ const bcrypt = require("bcrypt"); // For addLecturer and changePassword
 // System controller for room booking: rooms, time slots, bookings
 
 async function listRooms(req, res) {
-  let con; // ✅ Use let, not const
+  let con; // ✅ FIX: Use let, not const
   try {
-    con = await getConnection(); // ✅ Get connection inside function
+    con = await getConnection(); // ✅ FIX: Get connection inside function
     const [rows] = await con.execute(
       "SELECT room_id, room_name, room_description, created_by, status FROM rooms"
     );
@@ -15,7 +15,7 @@ async function listRooms(req, res) {
     console.error("listRooms error:", err);
     res.status(500).json({ error: "Database error" });
   } finally {
-    if (con) con.release(); // ✅ Release connection
+    if (con) con.release(); // ✅ FIX: Release connection
   }
 }
 
@@ -56,12 +56,13 @@ async function createRoom(req, res) {
     con = await getConnection(); 
     await con.beginTransaction();
     
+    // ✅ This query correctly uses the 'created_by' variable
     const [result] = await con.execute(
       "INSERT INTO rooms (room_name, room_description, created_by, status) VALUES (?, ?, ?, ?)",
       [
         room_name,
         room_description || null,
-        created_by || null,
+        created_by || null, // This will now receive the staff's ID
         status,
       ]
     );
@@ -473,7 +474,8 @@ async function changePassword(req, res) {
 }
 
 
-// ✅ --- NEW FUNCTION for the main history page (both roles) --- ✅
+// --- HISTORY FUNCTIONS ---
+
 async function listRoomsWithHistoryCount(req, res) {
   const { userId, role } = req.query;
   if (!userId || !role) {
@@ -489,8 +491,6 @@ async function listRoomsWithHistoryCount(req, res) {
     
     switch (role) {
       case "lecturer":
-        // Lecturers see ALL rooms
-        // The count is ONLY for bookings they personally approved/rejected
         query = `
           SELECT 
             r.room_id, 
@@ -508,8 +508,6 @@ async function listRoomsWithHistoryCount(req, res) {
         break;
 
       case "staff":
-        // ✅ FIX: Staff see ALL rooms
-        // The count is for ALL bookings in those rooms
         query = `
           SELECT 
             r.room_id, 
@@ -519,11 +517,10 @@ async function listRoomsWithHistoryCount(req, res) {
           FROM rooms r
           LEFT JOIN booking_history bh 
             ON r.room_id = bh.room_id
-          -- ✅ FIX: Removed "WHERE r.created_by = ?"
           GROUP BY r.room_id, r.room_name, r.status
           ORDER BY r.room_name;
         `;
-        params = []; // ✅ FIX: No params needed
+        params = []; // No params needed for staff
         break;
       
       default:
@@ -541,10 +538,9 @@ async function listRoomsWithHistoryCount(req, res) {
   }
 }
 
-// ✅ --- REFACTORED FUNCTION for the detail page (both roles) --- ✅
 async function getRoomHistory(req, res) {
   const { roomId } = req.params;
-  const { role, userId } = req.query; // Get role & ID from query params
+  const { role, userId } = req.query; 
 
   if (!roomId || !role || !userId) {
     return res.status(400).json({ error: "roomId, role, and userId are required" });
@@ -552,14 +548,13 @@ async function getRoomHistory(req, res) {
 
   let con;
   let query = "";
-  let params = [roomId, userId]; // Common params
+  let params = [roomId, userId]; 
 
   try {
     con = await getConnection();
 
     switch (role) {
       case "lecturer":
-        // Get history for this room WHERE approver_id matches
         query = `
           SELECT 
             bh.booking_date,
@@ -578,7 +573,6 @@ async function getRoomHistory(req, res) {
         break;
       
       case "staff":
-        // ✅ FIX: Get ALL history for this room, regardless of creator
         query = `
           SELECT 
             bh.booking_date,
@@ -593,10 +587,9 @@ async function getRoomHistory(req, res) {
           JOIN users u_student ON bh.user_id = u_student.user_id
           LEFT JOIN users u_approver ON bh.approver_id = u_approver.user_id
           WHERE bh.room_id = ? 
-          -- ✅ FIX: Removed "AND r.created_by = ?"
           ORDER BY bh.booking_date DESC, ts.time_period ASC
         `;
-        params = [roomId]; // ✅ FIX: Only pass roomId
+        params = [roomId]; // Staff doesn't need userId for this query
         break;
 
       default:
@@ -605,9 +598,11 @@ async function getRoomHistory(req, res) {
     
     const [rows] = await con.execute(query, params);
     res.json(rows);
+
   } catch (err) {
     console.error("getRoomHistory error:", err);
-    return res.status(500).json({ error: "Database error" });
+    // ✅ FIX: Removed the stray comment text
+    res.status(500).json({ error: "Database error" });
   } finally {
     if (con) con.release();
   }
