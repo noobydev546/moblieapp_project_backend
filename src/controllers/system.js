@@ -287,8 +287,7 @@ async function listUserBookings(req, res) {
         break;
 
       case "lecturer":
-        // This query is for "pending requests" for a lecturer
-        // It joins users to get the student name
+        // This query is for "Check Requests"
         query = `
           SELECT 
             bh.history_id,
@@ -304,11 +303,29 @@ async function listUserBookings(req, res) {
           JOIN users u_student ON bh.user_id = u_student.user_id
           WHERE bh.status = 'pending'
           ORDER BY bh.booking_date ASC, ts.time_period`;
-        params = []; // No userId needed for this query
+        params = [];
+        break;
+      
+      case "lecturer_history":
+        // This is for the "Lecturer History" page
+        query = `
+          SELECT 
+            bh.history_id,
+            r.room_name,
+            bh.booking_date,
+            ts.time_period,
+            bh.status,
+            bh.reason as reject_reason,
+            u_student.username as student_name
+          FROM booking_history bh
+          JOIN rooms r ON bh.room_id = r.room_id
+          JOIN time_slots ts ON bh.slot_id = ts.slot_id
+          JOIN users u_student ON bh.user_id = u_student.user_id
+          WHERE bh.approver_id = ? AND (bh.status = 'approved' OR bh.status = 'rejected')
+          ORDER BY bh.booking_date DESC, ts.time_period`;
         break;
 
       case "staff":
-        // Staff see: Room name, Date, Time slot, status, student name, etc.
         query = `
           SELECT 
             bh.history_id,
@@ -351,7 +368,7 @@ async function listUserBookings(req, res) {
 
 async function approveBooking(req, res) {
   const { history_id } = req.params;
-  const { approver_id, action, reason } = req.body; // Added 'reason'
+  const { approver_id, action, reason } = req.body;
   if (!history_id || !approver_id || !action)
     return res
       .status(400)
@@ -360,7 +377,7 @@ async function approveBooking(req, res) {
     return res
       .status(400)
       .json({ error: "action must be approved or rejected" });
-  if (action === 'rejected' && (!reason || reason.trim().isEmpty)) {
+  if (action === 'rejected' && (!reason || reason.trim().length === 0)) {
      return res.status(400).json({ error: "reason is required for rejection" });
   }
 
@@ -386,7 +403,6 @@ async function approveBooking(req, res) {
 
     const slot_id = bookingRows[0].slot_id;
 
-    // Update the 'reason' column only if rejecting
     const updateReason = action === 'rejected' ? reason : null;
     const [result] = await con.execute(
       "UPDATE booking_history SET status = ?, approver_id = ?, approved_at = CURRENT_TIMESTAMP, reason = ? WHERE history_id = ?",
@@ -511,6 +527,79 @@ async function changePassword(req, res) {
   }
 }
 
+// ✅ --- NEW FUNCTION FOR LECTURER ROOM HISTORY --- ✅
+async function getRoomHistoryForLecturer(req, res) {
+  const { roomId, lecturerId } = req.params;
+  if (!roomId || !lecturerId) {
+    return res.status(400).json({ error: "roomId and lecturerId are required" });
+  }
+
+  let con;
+  try {
+    con = await getConnection();
+    const query = `
+      SELECT 
+        bh.booking_date,
+        ts.time_period,
+        bh.status,
+        bh.reason,
+        u_student.username as student_name
+      FROM booking_history bh
+      JOIN time_slots ts ON bh.slot_id = ts.slot_id
+      JOIN users u_student ON bh.user_id = u_student.user_id
+      WHERE bh.room_id = ? 
+        AND bh.approver_id = ? 
+        AND (bh.status = 'approved' OR bh.status = 'rejected')
+      ORDER BY bh.booking_date DESC, ts.time_period ASC
+    `;
+    
+    const [rows] = await con.execute(query, [roomId, lecturerId]);
+    res.json(rows);
+
+  } catch (err) {
+    console.error("getRoomHistoryForLecturer error:", err);
+    res.status(500).json({ error: "Database error" });
+  } finally {
+    if (con) con.release();
+  }
+}
+
+async function listRoomsWithHistoryCount(req, res) {
+  const { lecturerId } = req.params;
+  if (!lecturerId) {
+    return res.status(400).json({ error: "lecturerId is required" });
+  }
+
+  let con;
+  try {
+    con = await getConnection();
+    const query = `
+      SELECT 
+        r.room_id, 
+        r.room_name, 
+        r.status,
+        COUNT(bh.history_id) as history_count
+      FROM rooms r
+      LEFT JOIN booking_history bh 
+        ON r.room_id = bh.room_id 
+        AND bh.approver_id = ? 
+        AND (bh.status = 'approved' OR bh.status = 'rejected')
+      GROUP BY r.room_id, r.room_name, r.status
+      ORDER BY r.room_name;
+    `;
+    
+    const [rows] = await con.execute(query, [lecturerId]);
+    res.json(rows);
+
+  } catch (err) {
+    console.error("listRoomsWithHistoryCount error:", err);
+    res.status(500).json({ error: "Database error" });
+  } finally {
+    if (con) con.release();
+  }
+}
+
+
 module.exports = {
   listRooms,
   getRoom,
@@ -523,4 +612,6 @@ module.exports = {
   approveBooking,
   addLecturer,
   changePassword,
+  getRoomHistoryForLecturer,
+  listRoomsWithHistoryCount, 
 };

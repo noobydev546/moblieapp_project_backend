@@ -10,7 +10,9 @@ const {
   listUserBookings,
   approveBooking,
   addLecturer,
-  changePassword, // This is correctly imported
+  changePassword,
+  getRoomHistoryForLecturer,
+  listRoomsWithHistoryCount,
 } = require("../controllers/system.js");
 
 const router = Router();
@@ -34,6 +36,11 @@ router.post("/bookings/:history_id/approve", approveBooking);
 router.post("/lecturers", addLecturer);
 
 // Route for changing password
-router.put('/user/password', changePassword); // This is correct
+router.put('/user/password', changePassword);
+
+// ✅ 2. Add the new route for the lecturer history detail page
+router.get("/rooms/:roomId/history/:lecturerId", getRoomHistoryForLecturer);
+
+router.get("/history/lecturer/:lecturerId/rooms", listRoomsWithHistoryCount);
 
 module.exports = router;
