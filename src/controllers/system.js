@@ -4,9 +4,9 @@ const bcrypt = require("bcrypt"); // For addLecturer and changePassword
 // System controller for room booking: rooms, time slots, bookings
 
 async function listRooms(req, res) {
-  let con;
+  let con; // ✅ Use let, not const
   try {
-    con = await getConnection();
+    con = await getConnection(); // ✅ Get connection inside function
     const [rows] = await con.execute(
       "SELECT room_id, room_name, room_description, created_by, status FROM rooms"
     );
@@ -15,13 +15,14 @@ async function listRooms(req, res) {
     console.error("listRooms error:", err);
     res.status(500).json({ error: "Database error" });
   } finally {
-    if (con) con.release();
+    if (con) con.release(); // ✅ Release connection
   }
 }
 
 async function getRoom(req, res) {
   const { id } = req.params;
   if (!id) return res.status(400).json({ error: "room id is required" });
+  
   let con;
   try {
     con = await getConnection();
@@ -52,7 +53,9 @@ async function createRoom(req, res) {
 
   let con;
   try {
-    con = await getConnection();
+    con = await getConnection(); 
+    await con.beginTransaction();
+    
     const [result] = await con.execute(
       "INSERT INTO rooms (room_name, room_description, created_by, status) VALUES (?, ?, ?, ?)",
       [
@@ -70,20 +73,19 @@ async function createRoom(req, res) {
       "13:00-15:00",
       "15:00-17:00",
     ];
-    try {
-      const params = [];
-      const placeholders = defaultSlots.map(() => "(?, ?, ?)").join(", ");
-      defaultSlots.forEach((p) => {
-        params.push(roomId, p, "Free");
-      });
-      await con.execute(
-        `INSERT INTO time_slots (room_id, time_period, status) VALUES ${placeholders}`,
-        params
-      );
-    } catch (slotErr) {
-      console.error("createRoom - inserting default slots error:", slotErr);
-    }
 
+    const params = [];
+    const placeholders = defaultSlots.map(() => "(?, ?, ?)").join(", ");
+    defaultSlots.forEach((p) => {
+      params.push(roomId, p, "Free");
+    });
+    await con.execute(
+      `INSERT INTO time_slots (room_id, time_period, status) VALUES ${placeholders}`,
+      params
+    );
+
+    await con.commit(); // Commit the transaction
+    
     res.status(201).json({
       room_id: roomId,
       room_name,
@@ -92,13 +94,14 @@ async function createRoom(req, res) {
       status,
     });
   } catch (err) {
+    if (con) await con.rollback(); // Rollback on error
     console.error("createRoom error:", err);
     if (err && err.code === "ER_DUP_ENTRY") {
       return res.status(409).json({ error: "Room name already exists" });
     }
     res.status(500).json({ error: "Database error" });
   } finally {
-    if (con) con.release();
+    if (con) con.release(); // Release the connection
   }
 }
 
@@ -137,27 +140,27 @@ async function updateRoom(req, res) {
 async function deleteRoom(req, res) {
   const { id } = req.params;
   if (!id) return res.status(400).json({ error: "room id is required" });
+  
   let con;
   try {
     con = await getConnection();
     await con.beginTransaction();
+    
     await con.execute("DELETE FROM time_slots WHERE room_id = ?", [id]);
     const [result] = await con.execute("DELETE FROM rooms WHERE room_id = ?", [
       id,
     ]);
+    
     if (result.affectedRows === 0) {
       await con.rollback();
       return res.status(404).json({ error: "Room not found" });
     }
+    
     await con.commit();
     res.json({ message: "Room and its time slots deleted" });
   } catch (err) {
+    if (con) await con.rollback();
     console.error("deleteRoom error:", err);
-    try {
-      if (con) await con.rollback();
-    } catch (e) {
-      console.error("Rollback error:", e);
-    }
     res.status(500).json({ error: "Database error" });
   } finally {
     if (con) con.release();
@@ -167,6 +170,7 @@ async function deleteRoom(req, res) {
 async function listTimeSlots(req, res) {
   const roomId = req.params?.roomId || req.query?.roomId;
   if (!roomId) return res.status(400).json({ error: "roomId is required" });
+
   let con;
   try {
     con = await getConnection();
@@ -196,6 +200,7 @@ async function createBooking(req, res) {
   let con;
   try {
     con = await getConnection();
+    await con.beginTransaction();
 
     const [existingBookings] = await con.execute(
       "SELECT history_id FROM booking_history WHERE user_id = ? AND booking_date = ? AND (status = 'pending' OR status = 'approved')",
@@ -203,12 +208,11 @@ async function createBooking(req, res) {
     );
 
     if (existingBookings.length > 0) {
+      await con.rollback();
       return res
         .status(409)
         .json({ error: "You already have an active or approved booking for this date. You can only make a new request if your previous one is rejected." });
     }
-
-    await con.beginTransaction();
 
     const [result] = await con.execute(
       "INSERT INTO booking_history (user_id, room_id, slot_id, booking_date, reason, status) VALUES (?, ?, ?, ?, ?, 'pending')",
@@ -234,14 +238,8 @@ async function createBooking(req, res) {
         status: "pending",
       });
   } catch (err) {
+    if (con) await con.rollback();
     console.error("createBooking error:", err);
-    if (con) {
-      try {
-        await con.rollback();
-      } catch (rollBackErr) {
-        console.error("createBooking rollback error:", rollBackErr);
-      }
-    }
     res.status(500).json({ error: "Database error during booking" });
   } finally {
     if (con) con.release();
@@ -305,52 +303,6 @@ async function listUserBookings(req, res) {
           ORDER BY bh.booking_date ASC, ts.time_period`;
         params = [];
         break;
-      
-      case "lecturer_history":
-        // This is for the "Lecturer History" page
-        query = `
-          SELECT 
-            bh.history_id,
-            r.room_name,
-            bh.booking_date,
-            ts.time_period,
-            bh.status,
-            bh.reason as reject_reason,
-            u_student.username as student_name
-          FROM booking_history bh
-          JOIN rooms r ON bh.room_id = r.room_id
-          JOIN time_slots ts ON bh.slot_id = ts.slot_id
-          JOIN users u_student ON bh.user_id = u_student.user_id
-          WHERE bh.approver_id = ? AND (bh.status = 'approved' OR bh.status = 'rejected')
-          ORDER BY bh.booking_date DESC, ts.time_period`;
-        break;
-
-      case "staff":
-        query = `
-          SELECT 
-            bh.history_id,
-            r.room_name,
-            bh.booking_date,
-            ts.time_period,
-            ts.status as time_slot_status,
-            bh.status,
-            u_student.username as student_name,
-            CASE 
-              WHEN bh.status = 'rejected' THEN bh.reason
-              ELSE NULL
-            END as reject_reason,
-            CASE 
-              WHEN bh.approver_id IS NOT NULL THEN CONCAT(u_approver.username)
-              ELSE NULL
-            END as approver_name
-          FROM booking_history bh
-          JOIN rooms r ON bh.room_id = r.room_id
-          JOIN time_slots ts ON bh.slot_id = ts.slot_id
-          LEFT JOIN users u_approver ON bh.approver_id = u_approver.user_id
-          JOIN users u_student ON bh.user_id = u_student.user_id
-          WHERE r.created_by = ?
-          ORDER BY bh.booking_date DESC, ts.time_period`;
-        break;
 
       default:
         return res.status(400).json({ error: "Invalid role specified" });
@@ -362,7 +314,7 @@ async function listUserBookings(req, res) {
     console.error("listUserBookings error:", err);
     res.status(500).json({ error: "Database error" });
   } finally {
-    if (con) con.release();
+    if(con) con.release();
   }
 }
 
@@ -424,14 +376,8 @@ async function approveBooking(req, res) {
 
     res.json({ message: `Booking ${action}` });
   } catch (err) {
+    if (con) await con.rollback();
     console.error("approveBooking error:", err);
-    if (con) {
-      try {
-        await con.rollback();
-      } catch (rollBackErr) {
-        console.error("approveBooking rollback error:", rollBackErr);
-      }
-    }
     res.status(500).json({ error: "Database error during approval" });
   } finally {
     if (con) con.release();
@@ -479,7 +425,7 @@ async function addLecturer(req, res) {
     console.error("addLecturer error:", err);
     return res.status(500).json({ error: "Database error" });
   } finally {
-    if (con) con.release();
+    if(con) con.release();
   }
 }
 
@@ -504,7 +450,6 @@ async function changePassword(req, res) {
     }
 
     const currentHashedPassword = users[0].password;
-
     const isMatch = await bcrypt.compare(oldPassword, currentHashedPassword);
 
     if (!isMatch) {
@@ -523,77 +468,146 @@ async function changePassword(req, res) {
     console.error("changePassword error:", err);
     res.status(500).json({ error: "Database error" });
   } finally {
-    if (con) con.release();
+    if(con) con.release();
   }
 }
 
-// ✅ --- NEW FUNCTION FOR LECTURER ROOM HISTORY --- ✅
-async function getRoomHistoryForLecturer(req, res) {
-  const { roomId, lecturerId } = req.params;
-  if (!roomId || !lecturerId) {
-    return res.status(400).json({ error: "roomId and lecturerId are required" });
-  }
 
-  let con;
-  try {
-    con = await getConnection();
-    const query = `
-      SELECT 
-        bh.booking_date,
-        ts.time_period,
-        bh.status,
-        bh.reason,
-        u_student.username as student_name
-      FROM booking_history bh
-      JOIN time_slots ts ON bh.slot_id = ts.slot_id
-      JOIN users u_student ON bh.user_id = u_student.user_id
-      WHERE bh.room_id = ? 
-        AND bh.approver_id = ? 
-        AND (bh.status = 'approved' OR bh.status = 'rejected')
-      ORDER BY bh.booking_date DESC, ts.time_period ASC
-    `;
-    
-    const [rows] = await con.execute(query, [roomId, lecturerId]);
-    res.json(rows);
-
-  } catch (err) {
-    console.error("getRoomHistoryForLecturer error:", err);
-    res.status(500).json({ error: "Database error" });
-  } finally {
-    if (con) con.release();
-  }
-}
-
+// ✅ --- NEW FUNCTION for the main history page (both roles) --- ✅
 async function listRoomsWithHistoryCount(req, res) {
-  const { lecturerId } = req.params;
-  if (!lecturerId) {
-    return res.status(400).json({ error: "lecturerId is required" });
+  const { userId, role } = req.query;
+  if (!userId || !role) {
+    return res.status(400).json({ error: "userId and role are required" });
   }
 
   let con;
+  let query = "";
+  let params = [userId];
+
   try {
     con = await getConnection();
-    const query = `
-      SELECT 
-        r.room_id, 
-        r.room_name, 
-        r.status,
-        COUNT(bh.history_id) as history_count
-      FROM rooms r
-      LEFT JOIN booking_history bh 
-        ON r.room_id = bh.room_id 
-        AND bh.approver_id = ? 
-        AND (bh.status = 'approved' OR bh.status = 'rejected')
-      GROUP BY r.room_id, r.room_name, r.status
-      ORDER BY r.room_name;
-    `;
     
-    const [rows] = await con.execute(query, [lecturerId]);
+    switch (role) {
+      case "lecturer":
+        // Lecturers see ALL rooms
+        // The count is ONLY for bookings they personally approved/rejected
+        query = `
+          SELECT 
+            r.room_id, 
+            r.room_name, 
+            r.status,
+            COUNT(bh.history_id) as history_count
+          FROM rooms r
+          LEFT JOIN booking_history bh 
+            ON r.room_id = bh.room_id 
+            AND bh.approver_id = ? 
+            AND (bh.status = 'approved' OR bh.status = 'rejected')
+          GROUP BY r.room_id, r.room_name, r.status
+          ORDER BY r.room_name;
+        `;
+        break;
+
+      case "staff":
+        // ✅ FIX: Staff see ALL rooms
+        // The count is for ALL bookings in those rooms
+        query = `
+          SELECT 
+            r.room_id, 
+            r.room_name, 
+            r.status,
+            COUNT(bh.history_id) as history_count
+          FROM rooms r
+          LEFT JOIN booking_history bh 
+            ON r.room_id = bh.room_id
+          -- ✅ FIX: Removed "WHERE r.created_by = ?"
+          GROUP BY r.room_id, r.room_name, r.status
+          ORDER BY r.room_name;
+        `;
+        params = []; // ✅ FIX: No params needed
+        break;
+      
+      default:
+        return res.status(400).json({ error: "Invalid role specified for history count" });
+    }
+    
+    const [rows] = await con.execute(query, params);
     res.json(rows);
 
   } catch (err) {
     console.error("listRoomsWithHistoryCount error:", err);
     res.status(500).json({ error: "Database error" });
+  } finally {
+    if(con) con.release();
+  }
+}
+
+// ✅ --- REFACTORED FUNCTION for the detail page (both roles) --- ✅
+async function getRoomHistory(req, res) {
+  const { roomId } = req.params;
+  const { role, userId } = req.query; // Get role & ID from query params
+
+  if (!roomId || !role || !userId) {
+    return res.status(400).json({ error: "roomId, role, and userId are required" });
+  }
+
+  let con;
+  let query = "";
+  let params = [roomId, userId]; // Common params
+
+  try {
+    con = await getConnection();
+
+    switch (role) {
+      case "lecturer":
+        // Get history for this room WHERE approver_id matches
+        query = `
+          SELECT 
+            bh.booking_date,
+            ts.time_period,
+            bh.status,
+            bh.reason,
+            u_student.username as student_name
+          FROM booking_history bh
+          JOIN time_slots ts ON bh.slot_id = ts.slot_id
+          JOIN users u_student ON bh.user_id = u_student.user_id
+          WHERE bh.room_id = ? 
+            AND bh.approver_id = ? 
+            AND (bh.status = 'approved' OR bh.status = 'rejected')
+          ORDER BY bh.booking_date DESC, ts.time_period ASC
+        `;
+        break;
+      
+      case "staff":
+        // ✅ FIX: Get ALL history for this room, regardless of creator
+        query = `
+          SELECT 
+            bh.booking_date,
+            ts.time_period,
+            bh.status,
+            bh.reason,
+            u_student.username as student_name,
+            u_approver.username as approver_name
+          FROM booking_history bh
+          JOIN rooms r ON bh.room_id = r.room_id
+          JOIN time_slots ts ON bh.slot_id = ts.slot_id
+          JOIN users u_student ON bh.user_id = u_student.user_id
+          LEFT JOIN users u_approver ON bh.approver_id = u_approver.user_id
+          WHERE bh.room_id = ? 
+          -- ✅ FIX: Removed "AND r.created_by = ?"
+          ORDER BY bh.booking_date DESC, ts.time_period ASC
+        `;
+        params = [roomId]; // ✅ FIX: Only pass roomId
+        break;
+
+      default:
+        return res.status(400).json({ error: "Invalid role specified for history details" });
+    }
+    
+    const [rows] = await con.execute(query, params);
+    res.json(rows);
+  } catch (err) {
+    console.error("getRoomHistory error:", err);
+    return res.status(500).json({ error: "Database error" });
   } finally {
     if (con) con.release();
   }
@@ -612,6 +626,6 @@ module.exports = {
   approveBooking,
   addLecturer,
   changePassword,
-  getRoomHistoryForLecturer,
-  listRoomsWithHistoryCount, 
+  getRoomHistory, // ✅ EXPORT
+  listRoomsWithHistoryCount, // ✅ EXPORT
 };
