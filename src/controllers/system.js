@@ -189,62 +189,83 @@ async function listTimeSlots(req, res) {
 }
 
 async function createBooking(req, res) {
-  const { user_id, room_id, slot_id, booking_date, reason } = req.body;
-  if (!user_id || !room_id || !slot_id || !booking_date) {
-    return res
-      .status(400)
-      .json({
-        error: "user_id, room_id, slot_id and booking_date are required",
-      });
-  }
+  const { user_id, room_id, slot_id, booking_date, reason } = req.body;
+  if (!user_id || !room_id || !slot_id || !booking_date) {
+    return res
+      .status(400)
+      .json({
+        error: "user_id, room_id, slot_id and booking_date are required",
+      });
+  }
 
-  let con;
-  try {
-    con = await getConnection();
-    await con.beginTransaction();
+  let con;
+  try {
+    con = await getConnection();
+    await con.beginTransaction();
 
-    const [existingBookings] = await con.execute(
-      "SELECT history_id FROM booking_history WHERE user_id = ? AND booking_date = ? AND (status = 'pending' OR status = 'approved')",
-      [user_id, booking_date]
-    );
+    // 1. Check for user's existing bookings (Your original check, which is good)
+    const [existingBookings] = await con.execute(
+      "SELECT history_id FROM booking_history WHERE user_id = ? AND booking_date = ? AND (status = 'pending' OR status = 'approved')",
+      [user_id, booking_date]
+    );
 
-    if (existingBookings.length > 0) {
-      await con.rollback();
-      return res
-        .status(409)
-        .json({ error: "You already have an active or approved booking for this date. You can only make a new request if your previous one is rejected." });
-    }
+    if (existingBookings.length > 0) {
+      await con.rollback();
+      return res
+        .status(409)
+        .json({ error: "You already have an active or approved booking for this date. You can only make a new request if your previous one is rejected." });
+    }
 
-    const [result] = await con.execute(
-      "INSERT INTO booking_history (user_id, room_id, slot_id, booking_date, reason, status) VALUES (?, ?, ?, ?, ?, 'pending')",
-      [user_id, room_id, slot_id, booking_date, reason || null]
-    );
+    // 2. ⭐️ NEW: Check slot status and lock the row for the transaction
+    const [slotRows] = await con.execute(
+      "SELECT status FROM time_slots WHERE slot_id = ? FOR UPDATE",
+      [slot_id]
+    );
 
-    await con.execute(
-      "UPDATE time_slots SET status = 'Pending' WHERE slot_id = ?",
-      [slot_id]
-    );
+    if (slotRows.length === 0) {
+      await con.rollback();
+      return res.status(404).json({ error: "Time slot not found." });
+    }
 
-    await con.commit();
+    if (slotRows[0].status !== 'Free') {
+      await con.rollback();
+      // This error will be shown to User B
+      return res.status(409).json({ error: "This time slot is no longer available. Please refresh." });
+    }
 
-    res
-      .status(201)
-      .json({
-        history_id: result.insertId,
-        user_id,
-        room_id,
-        slot_id,
-        booking_date,
-        reason,
-        status: "pending",
-      });
-  } catch (err) {
-    if (con) await con.rollback();
-    console.error("createBooking error:", err);
-    res.status(500).json({ error: "Database error during booking" });
-  } finally {
-    if (con) con.release();
-  }
+    // 3. Insert the new booking (Your original code)
+    const [result] = await con.execute(
+      "INSERT INTO booking_history (user_id, room_id, slot_id, booking_date, reason, status) VALUES (?, ?, ?, ?, ?, 'pending')",
+      [user_id, room_id, slot_id, booking_date, reason || null]
+    );
+
+    // 4. Update the time slot status (Your original code)
+    await con.execute(
+      "UPDATE time_slots SET status = 'Pending' WHERE slot_id = ?",
+      [slot_id]
+    );
+
+    // 5. Commit the transaction
+    await con.commit();
+
+    res
+      .status(201)
+      .json({
+        history_id: result.insertId,
+        user_id,
+        room_id,
+        slot_id,
+        booking_date,
+        reason,
+        status: "pending",
+      });
+  } catch (err) {
+    if (con) await con.rollback();
+    console.error("createBooking error:", err);
+    res.status(500).json({ error: "Database error during booking" });
+  } finally {
+    if (con) con.release();
+  }
 }
 
 async function listUserBookings(req, res) {
