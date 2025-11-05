@@ -175,10 +175,31 @@ async function listTimeSlots(req, res) {
   let con;
   try {
     con = await getConnection();
+    
+    // This query dynamically joins time_slots with today's bookings
     const [rows] = await con.execute(
-      "SELECT slot_id, room_id, time_period, status as time_slot_status FROM time_slots WHERE room_id = ?",
+      `
+      SELECT
+        ts.slot_id,
+        ts.room_id,
+        ts.time_period,
+        CASE
+          WHEN ts.status = 'Disable' THEN 'Disable'
+          WHEN bh.status = 'approved' THEN 'Reserved'
+          WHEN bh.status = 'pending' THEN 'Pending'
+          ELSE 'Free'
+        END AS time_slot_status
+      FROM time_slots ts
+      LEFT JOIN booking_history bh
+        ON ts.slot_id = bh.slot_id
+        AND bh.booking_date = CURDATE() 
+        AND (bh.status = 'pending' OR bh.status = 'approved')
+      WHERE ts.room_id = ?
+      ORDER BY ts.slot_id
+      `,
       [roomId]
     );
+
     res.json(rows);
   } catch (err) {
     console.error("listTimeSlots error:", err);
@@ -189,83 +210,90 @@ async function listTimeSlots(req, res) {
 }
 
 async function createBooking(req, res) {
-  const { user_id, room_id, slot_id, booking_date, reason } = req.body;
-  if (!user_id || !room_id || !slot_id || !booking_date) {
-    return res
-      .status(400)
-      .json({
-        error: "user_id, room_id, slot_id and booking_date are required",
-      });
-  }
+  const { user_id, room_id, slot_id, booking_date, reason } = req.body;
+  if (!user_id || !room_id || !slot_id || !booking_date) {
+    return res
+      .status(400)
+      .json({
+        error: "user_id, room_id, slot_id and booking_date are required",
+      });
+  }
 
-  let con;
-  try {
-    con = await getConnection();
-    await con.beginTransaction();
+  let con;
+  try {
+    con = await getConnection();
+    await con.beginTransaction();
 
-    // 1. Check for user's existing bookings (Your original check, which is good)
-    const [existingBookings] = await con.execute(
-      "SELECT history_id FROM booking_history WHERE user_id = ? AND booking_date = ? AND (status = 'pending' OR status = 'approved')",
-      [user_id, booking_date]
-    );
+    // 1. Check for user's existing bookings (Your original check, which is good)
+    const [existingUserBookings] = await con.execute(
+      "SELECT history_id FROM booking_history WHERE user_id = ? AND booking_date = ? AND (status = 'pending' OR status = 'approved')",
+      [user_id, booking_date]
+    );
 
-    if (existingBookings.length > 0) {
-      await con.rollback();
-      return res
-        .status(409)
-        .json({ error: "You already have an active or approved booking for this date. You can only make a new request if your previous one is rejected." });
-    }
+    if (existingUserBookings.length > 0) {
+      await con.rollback();
+      return res
+        .status(409)
+        .json({ error: "You already have an active or approved booking for this date. You can only make a new request if your previous one is rejected." });
+    }
 
-    // 2. ⭐️ NEW: Check slot status and lock the row for the transaction
-    const [slotRows] = await con.execute(
-      "SELECT status FROM time_slots WHERE slot_id = ? FOR UPDATE",
-      [slot_id]
-    );
+    // 2. ⭐️ UPDATED CHECK: Is the slot disabled in the main table?
+    const [slotRows] = await con.execute(
+      "SELECT status FROM time_slots WHERE slot_id = ? FOR UPDATE",
+      [slot_id]
+    );
 
-    if (slotRows.length === 0) {
-      await con.rollback();
-      return res.status(404).json({ error: "Time slot not found." });
-    }
+    if (slotRows.length === 0) {
+      await con.rollback();
+      return res.status(404).json({ error: "Time slot not found." });
+    }
 
-    if (slotRows[0].status !== 'Free') {
-      await con.rollback();
-      // This error will be shown to User B
-      return res.status(409).json({ error: "This time slot is no longer available. Please refresh." });
-    }
+    if (slotRows[0].status === 'Disable') {
+      await con.rollback();
+      return res.status(409).json({ error: "This time slot is permanently disabled." });
+    }
+    
+    // 3. ⭐️ UPDATED CHECK: Is the slot already booked by anyone on this date?
+    const [existingSlotBookings] = await con.execute(
+        "SELECT history_id FROM booking_history WHERE slot_id = ? AND booking_date = ? AND (status = 'pending' OR status = 'approved') FOR UPDATE",
+        [slot_id, booking_date]
+    );
+      
+    if (existingSlotBookings.length > 0) {
+        await con.rollback();
+        return res.status(409).json({ error: "This time slot is no longer available. Please refresh." });
+    }
 
-    // 3. Insert the new booking (Your original code)
-    const [result] = await con.execute(
-      "INSERT INTO booking_history (user_id, room_id, slot_id, booking_date, reason, status) VALUES (?, ?, ?, ?, ?, 'pending')",
-      [user_id, room_id, slot_id, booking_date, reason || null]
-    );
+    // 4. Insert the new booking (Your original code)
+    const [result] = await con.execute(
+      "INSERT INTO booking_history (user_id, room_id, slot_id, booking_date, reason, status) VALUES (?, ?, ?, ?, ?, 'pending')",
+      [user_id, room_id, slot_id, booking_date, reason || null]
+    );
 
-    // 4. Update the time slot status (Your original code)
-    await con.execute(
-      "UPDATE time_slots SET status = 'Pending' WHERE slot_id = ?",
-      [slot_id]
-    );
+    // 5. ⭐️ REMOVED the "UPDATE time_slots SET status = 'Pending'" line
+    // We no longer write to the time_slots table, so it never becomes stale.
 
-    // 5. Commit the transaction
-    await con.commit();
+    // 6. Commit the transaction
+    await con.commit();
 
-    res
-      .status(201)
-      .json({
-        history_id: result.insertId,
-        user_id,
-        room_id,
-        slot_id,
-        booking_date,
-        reason,
-        status: "pending",
-      });
-  } catch (err) {
-    if (con) await con.rollback();
-    console.error("createBooking error:", err);
-    res.status(500).json({ error: "Database error during booking" });
-  } finally {
-    if (con) con.release();
-  }
+    res
+      .status(201)
+      .json({
+        history_id: result.insertId,
+        user_id,
+        room_id,
+        slot_id,
+        booking_date,
+        reason,
+        status: "pending",
+      });
+  } catch (err) {
+    if (con) await con.rollback();
+    console.error("createBooking error:", err);
+    res.status(500).json({ error: "Database error during booking" });
+  } finally {
+    if (con) con.release();
+  }
 }
 
 async function listUserBookings(req, res) {
@@ -375,7 +403,8 @@ async function approveBooking(req, res) {
       return res.status(409).json({ error: "This booking has already been processed." });
     }
 
-    const slot_id = bookingRows[0].slot_id;
+    // This is no longer needed, but we keep it in case of other logic
+    const slot_id = bookingRows[0].slot_id; 
 
     const updateReason = action === 'rejected' ? reason : null;
     const [result] = await con.execute(
@@ -388,11 +417,8 @@ async function approveBooking(req, res) {
       return res.status(404).json({ error: "Booking not found" });
     }
 
-    const newSlotStatus = action === 'approved' ? 'Reserved' : 'Free';
-    await con.execute(
-      "UPDATE time_slots SET status = ? WHERE slot_id = ?",
-      [newSlotStatus, slot_id]
-    );
+    // ⭐️ DELETED: The "UPDATE time_slots SET status = ?" query is gone.
+    // It is no longer needed and was the source of the stale data.
 
     await con.commit();
 
