@@ -175,7 +175,7 @@ async function listTimeSlots(req, res) {
   let con;
   try {
     con = await getConnection();
-    
+
     // Set the timezone to match your app
     await con.execute("SET time_zone = '+07:00'");
 
@@ -338,7 +338,7 @@ async function listUserBookings(req, res) {
           JOIN time_slots ts ON bh.slot_id = ts.slot_id
           LEFT JOIN users u_approver ON bh.approver_id = u_approver.user_id
           WHERE bh.user_id = ?
-          ORDER BY bh.booking_date DESC, ts.time_period`;
+          ORDER BY bh.history_id DESC;`;
         break;
 
       case "lecturer":
@@ -357,7 +357,7 @@ async function listUserBookings(req, res) {
           JOIN time_slots ts ON bh.slot_id = ts.slot_id
           JOIN users u_student ON bh.user_id = u_student.user_id
           WHERE bh.status = 'pending'
-          ORDER BY bh.booking_date ASC, ts.time_period`;
+          ORDER BY bh.history_id DESC;`;
         params = [];
         break;
 
@@ -612,44 +612,41 @@ async function getRoomHistory(req, res) {
     switch (role) {
       case "lecturer":
         query = `
-          SELECT 
-            DATE_FORMAT(bh.booking_date, '%Y-%m-%d') AS booking_date,
-            ts.time_period,
-            bh.status,
-            bh.reason,
-            u_student.username as student_name
-          FROM booking_history bh
-          JOIN time_slots ts ON bh.slot_id = ts.slot_id
-          JOIN users u_student ON bh.user_id = u_student.user_id
-          WHERE bh.room_id = ? 
-            AND bh.approver_id = ? 
-            AND (bh.status = 'approved' OR bh.status = 'rejected')
-          ORDER BY bh.booking_date DESC, ts.time_period ASC
-        `;
+      SELECT 
+        DATE_FORMAT(bh.booking_date, '%Y-%m-%d') AS booking_date,
+        ts.time_period,
+        bh.status,
+        bh.reason,
+        u_student.username as student_name
+      FROM booking_history bh
+      JOIN time_slots ts ON bh.slot_id = ts.slot_id
+      JOIN users u_student ON bh.user_id = u_student.user_id
+      WHERE bh.room_id = ? 
+        AND bh.approver_id = ? 
+        AND (bh.status = 'approved' OR bh.status = 'rejected')
+      ORDER BY bh.history_id DESC  -- ✅ FIX: newest first
+    `;
         break;
 
       case "staff":
         query = `
-          SELECT 
-            DATE_FORMAT(bh.booking_date, '%Y-%m-%d') AS booking_date,
-            ts.time_period,
-            bh.status,
-            bh.reason,
-            u_student.username as student_name,
-            u_approver.username as approver_name
-          FROM booking_history bh
-          JOIN rooms r ON bh.room_id = r.room_id
-          JOIN time_slots ts ON bh.slot_id = ts.slot_id
-          JOIN users u_student ON bh.user_id = u_student.user_id
-          LEFT JOIN users u_approver ON bh.approver_id = u_approver.user_id
-          WHERE bh.room_id = ? 
-          ORDER BY bh.booking_date DESC, ts.time_period ASC
-        `;
-        params = [roomId]; // Staff doesn't need userId for this query
+      SELECT 
+        DATE_FORMAT(bh.booking_date, '%Y-%m-%d') AS booking_date,
+        ts.time_period,
+        bh.status,
+        bh.reason,
+        u_student.username as student_name,
+        u_approver.username as approver_name
+      FROM booking_history bh
+      JOIN rooms r ON bh.room_id = r.room_id
+      JOIN time_slots ts ON bh.slot_id = ts.slot_id
+      JOIN users u_student ON bh.user_id = u_student.user_id
+      LEFT JOIN users u_approver ON bh.approver_id = u_approver.user_id
+      WHERE bh.room_id = ? 
+      ORDER BY bh.history_id DESC  -- ✅ FIX: newest first
+    `;
+        params = [roomId];
         break;
-
-      default:
-        return res.status(400).json({ error: "Invalid role specified for history details" });
     }
 
     const [rows] = await con.execute(query, params);
