@@ -321,7 +321,7 @@ async function listUserBookings(req, res) {
           SELECT 
             bh.history_id,
             r.room_name,
-            bh.booking_date,
+            DATE_FORMAT(bh.booking_date, '%Y-%m-%d') as booking_date,
             ts.time_period,
             ts.status as time_slot_status,
             bh.status,
@@ -347,7 +347,7 @@ async function listUserBookings(req, res) {
           SELECT 
             bh.history_id,
             r.room_name,
-            bh.booking_date,
+            DATE_FORMAT(bh.booking_date, '%Y-%m-%d') as booking_date,
             ts.time_period,
             ts.status as time_slot_status,
             bh.status,
