@@ -607,12 +607,13 @@ async function getRoomHistory(req, res) {
 
   try {
     con = await getConnection();
+    await con.execute("SET time_zone = '+07:00'");
 
     switch (role) {
       case "lecturer":
         query = `
           SELECT 
-            bh.booking_date,
+            DATE_FORMAT(bh.booking_date, '%Y-%m-%d') AS booking_date,
             ts.time_period,
             bh.status,
             bh.reason,
@@ -630,7 +631,7 @@ async function getRoomHistory(req, res) {
       case "staff":
         query = `
           SELECT 
-            bh.booking_date,
+            DATE_FORMAT(bh.booking_date, '%Y-%m-%d') AS booking_date,
             ts.time_period,
             bh.status,
             bh.reason,
