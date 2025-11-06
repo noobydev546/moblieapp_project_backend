@@ -22,7 +22,7 @@ async function listRooms(req, res) {
 async function getRoom(req, res) {
   const { id } = req.params;
   if (!id) return res.status(400).json({ error: "room id is required" });
-  
+
   let con;
   try {
     con = await getConnection();
@@ -53,9 +53,9 @@ async function createRoom(req, res) {
 
   let con;
   try {
-    con = await getConnection(); 
+    con = await getConnection();
     await con.beginTransaction();
-    
+
     // ✅ This query correctly uses the 'created_by' variable
     const [result] = await con.execute(
       "INSERT INTO rooms (room_name, room_description, created_by, status) VALUES (?, ?, ?, ?)",
@@ -86,7 +86,7 @@ async function createRoom(req, res) {
     );
 
     await con.commit(); // Commit the transaction
-    
+
     res.status(201).json({
       room_id: roomId,
       room_name,
@@ -141,22 +141,22 @@ async function updateRoom(req, res) {
 async function deleteRoom(req, res) {
   const { id } = req.params;
   if (!id) return res.status(400).json({ error: "room id is required" });
-  
+
   let con;
   try {
     con = await getConnection();
     await con.beginTransaction();
-    
+
     await con.execute("DELETE FROM time_slots WHERE room_id = ?", [id]);
     const [result] = await con.execute("DELETE FROM rooms WHERE room_id = ?", [
       id,
     ]);
-    
+
     if (result.affectedRows === 0) {
       await con.rollback();
       return res.status(404).json({ error: "Room not found" });
     }
-    
+
     await con.commit();
     res.json({ message: "Room and its time slots deleted" });
   } catch (err) {
@@ -176,7 +176,10 @@ async function listTimeSlots(req, res) {
   try {
     con = await getConnection();
     
-    // This query dynamically joins time_slots with today's bookings
+    // Set the timezone to match your app
+    await con.execute("SET time_zone = '+07:00'");
+
+    // ⭐️ This is the full, correct query ⭐️
     const [rows] = await con.execute(
       `
       SELECT
@@ -210,7 +213,9 @@ async function listTimeSlots(req, res) {
 }
 
 async function createBooking(req, res) {
+  // We still get booking_date, but we will ignore it and use CURDATE()
   const { user_id, room_id, slot_id, booking_date, reason } = req.body;
+
   if (!user_id || !room_id || !slot_id || !booking_date) {
     return res
       .status(400)
@@ -222,12 +227,16 @@ async function createBooking(req, res) {
   let con;
   try {
     con = await getConnection();
+
+    // ⭐️ FIX 1: Set the timezone to match your app
+    await con.execute("SET time_zone = '+07:00'");
+
     await con.beginTransaction();
 
-    // 1. Check for user's existing bookings (Your original check, which is good)
+    // 1. Check for user's existing bookings FOR THE SERVER'S CURRENT DATE
     const [existingUserBookings] = await con.execute(
-      "SELECT history_id FROM booking_history WHERE user_id = ? AND booking_date = ? AND (status = 'pending' OR status = 'approved')",
-      [user_id, booking_date]
+      "SELECT history_id FROM booking_history WHERE user_id = ? AND booking_date = CURDATE() AND (status = 'pending' OR status = 'approved')",
+      [user_id]
     );
 
     if (existingUserBookings.length > 0) {
@@ -237,7 +246,7 @@ async function createBooking(req, res) {
         .json({ error: "You already have an active or approved booking for this date. You can only make a new request if your previous one is rejected." });
     }
 
-    // 2. ⭐️ UPDATED CHECK: Is the slot disabled in the main table?
+    // 2. Check if the slot is disabled in the main table
     const [slotRows] = await con.execute(
       "SELECT status FROM time_slots WHERE slot_id = ? FOR UPDATE",
       [slot_id]
@@ -252,28 +261,26 @@ async function createBooking(req, res) {
       await con.rollback();
       return res.status(409).json({ error: "This time slot is permanently disabled." });
     }
-    
-    // 3. ⭐️ UPDATED CHECK: Is the slot already booked by anyone on this date?
+
+    // 3. Check if the slot is already booked by anyone FOR THE SERVER'S CURRENT DATE
     const [existingSlotBookings] = await con.execute(
-        "SELECT history_id FROM booking_history WHERE slot_id = ? AND booking_date = ? AND (status = 'pending' OR status = 'approved') FOR UPDATE",
-        [slot_id, booking_date]
+      "SELECT history_id FROM booking_history WHERE slot_id = ? AND booking_date = CURDATE() AND (status = 'pending' OR status = 'approved') FOR UPDATE",
+      [slot_id]
     );
-      
+
     if (existingSlotBookings.length > 0) {
-        await con.rollback();
-        return res.status(409).json({ error: "This time slot is no longer available. Please refresh." });
+      await con.rollback();
+      return res.status(409).json({ error: "This time slot is no longer available. Please refresh." });
     }
 
-    // 4. Insert the new booking (Your original code)
+    // 4. Insert the new booking using CURDATE()
+    // ⭐️ FIX 2: Use CURDATE() instead of the date from the app
     const [result] = await con.execute(
-      "INSERT INTO booking_history (user_id, room_id, slot_id, booking_date, reason, status) VALUES (?, ?, ?, ?, ?, 'pending')",
-      [user_id, room_id, slot_id, booking_date, reason || null]
+      "INSERT INTO booking_history (user_id, room_id, slot_id, booking_date, reason, status) VALUES (?, ?, ?, CURDATE(), ?, 'pending')",
+      [user_id, room_id, slot_id, reason || null]
     );
 
-    // 5. ⭐️ REMOVED the "UPDATE time_slots SET status = 'Pending'" line
-    // We no longer write to the time_slots table, so it never becomes stale.
-
-    // 6. Commit the transaction
+    // 5. Commit the transaction
     await con.commit();
 
     res
@@ -283,7 +290,7 @@ async function createBooking(req, res) {
         user_id,
         room_id,
         slot_id,
-        booking_date,
+        booking_date: "Booking for today", // This response value doesn't affect the database
         reason,
         status: "pending",
       });
@@ -364,7 +371,7 @@ async function listUserBookings(req, res) {
     console.error("listUserBookings error:", err);
     res.status(500).json({ error: "Database error" });
   } finally {
-    if(con) con.release();
+    if (con) con.release();
   }
 }
 
@@ -380,7 +387,7 @@ async function approveBooking(req, res) {
       .status(400)
       .json({ error: "action must be approved or rejected" });
   if (action === 'rejected' && (!reason || reason.trim().length === 0)) {
-     return res.status(400).json({ error: "reason is required for rejection" });
+    return res.status(400).json({ error: "reason is required for rejection" });
   }
 
   let con;
@@ -397,14 +404,15 @@ async function approveBooking(req, res) {
       await con.rollback();
       return res.status(404).json({ error: "Booking not found" });
     }
-    
+
     if (bookingRows[0].status !== 'pending') {
       await con.rollback();
       return res.status(409).json({ error: "This booking has already been processed." });
     }
+    // ⭐️ THE STRAY 'a' CHARACTER WAS HERE. IT IS NOW REMOVED.
 
     // This is no longer needed, but we keep it in case of other logic
-    const slot_id = bookingRows[0].slot_id; 
+    const slot_id = bookingRows[0].slot_id;
 
     const updateReason = action === 'rejected' ? reason : null;
     const [result] = await con.execute(
@@ -473,7 +481,7 @@ async function addLecturer(req, res) {
     console.error("addLecturer error:", err);
     return res.status(500).json({ error: "Database error" });
   } finally {
-    if(con) con.release();
+    if (con) con.release();
   }
 }
 
@@ -516,7 +524,7 @@ async function changePassword(req, res) {
     console.error("changePassword error:", err);
     res.status(500).json({ error: "Database error" });
   } finally {
-    if(con) con.release();
+    if (con) con.release();
   }
 }
 
@@ -535,7 +543,7 @@ async function listRoomsWithHistoryCount(req, res) {
 
   try {
     con = await getConnection();
-    
+
     switch (role) {
       case "lecturer":
         query = `
@@ -569,11 +577,11 @@ async function listRoomsWithHistoryCount(req, res) {
         `;
         params = []; // No params needed for staff
         break;
-      
+
       default:
         return res.status(400).json({ error: "Invalid role specified for history count" });
     }
-    
+
     const [rows] = await con.execute(query, params);
     res.json(rows);
 
@@ -581,13 +589,13 @@ async function listRoomsWithHistoryCount(req, res) {
     console.error("listRoomsWithHistoryCount error:", err);
     res.status(500).json({ error: "Database error" });
   } finally {
-    if(con) con.release();
+    if (con) con.release();
   }
 }
 
 async function getRoomHistory(req, res) {
   const { roomId } = req.params;
-  const { role, userId } = req.query; 
+  const { role, userId } = req.query;
 
   if (!roomId || !role || !userId) {
     return res.status(400).json({ error: "roomId, role, and userId are required" });
@@ -595,7 +603,7 @@ async function getRoomHistory(req, res) {
 
   let con;
   let query = "";
-  let params = [roomId, userId]; 
+  let params = [roomId, userId];
 
   try {
     con = await getConnection();
@@ -618,7 +626,7 @@ async function getRoomHistory(req, res) {
           ORDER BY bh.booking_date DESC, ts.time_period ASC
         `;
         break;
-      
+
       case "staff":
         query = `
           SELECT 
@@ -642,7 +650,7 @@ async function getRoomHistory(req, res) {
       default:
         return res.status(400).json({ error: "Invalid role specified for history details" });
     }
-    
+
     const [rows] = await con.execute(query, params);
     res.json(rows);
 
