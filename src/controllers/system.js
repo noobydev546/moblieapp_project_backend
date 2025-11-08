@@ -1,12 +1,12 @@
 const { getConnection } = require("../config/db.js");
-const bcrypt = require("bcrypt"); // For addLecturer and changePassword
+const bcrypt = require("bcrypt"); 
 
-// System controller for room booking: rooms, time slots, bookings
+
 
 async function listRooms(req, res) {
-  let con; // ✅ FIX: Use let, not const
+  let con; 
   try {
-    con = await getConnection(); // ✅ FIX: Get connection inside function
+    con = await getConnection(); 
     const [rows] = await con.execute(
       "SELECT room_id, room_name, room_description, created_by, status FROM rooms"
     );
@@ -15,7 +15,7 @@ async function listRooms(req, res) {
     console.error("listRooms error:", err);
     res.status(500).json({ error: "Database error" });
   } finally {
-    if (con) con.release(); // ✅ FIX: Release connection
+    if (con) con.release(); 
   }
 }
 
@@ -56,13 +56,13 @@ async function createRoom(req, res) {
     con = await getConnection();
     await con.beginTransaction();
 
-    // ✅ This query correctly uses the 'created_by' variable
+   
     const [result] = await con.execute(
       "INSERT INTO rooms (room_name, room_description, created_by, status) VALUES (?, ?, ?, ?)",
       [
         room_name,
         room_description || null,
-        created_by || null, // This will now receive the staff's ID
+        created_by || null, 
         status,
       ]
     );
@@ -85,7 +85,7 @@ async function createRoom(req, res) {
       params
     );
 
-    await con.commit(); // Commit the transaction
+    await con.commit(); 
 
     res.status(201).json({
       room_id: roomId,
@@ -95,14 +95,14 @@ async function createRoom(req, res) {
       status,
     });
   } catch (err) {
-    if (con) await con.rollback(); // Rollback on error
+    if (con) await con.rollback(); 
     console.error("createRoom error:", err);
     if (err && err.code === "ER_DUP_ENTRY") {
       return res.status(409).json({ error: "Room name already exists" });
     }
     res.status(500).json({ error: "Database error" });
   } finally {
-    if (con) con.release(); // Release the connection
+    if (con) con.release(); 
   }
 }
 
@@ -176,10 +176,10 @@ async function listTimeSlots(req, res) {
   try {
     con = await getConnection();
 
-    // Set the timezone to match your app
+   
     await con.execute("SET time_zone = '+07:00'");
 
-    // ⭐️ This is the full, correct query ⭐️
+ 
     const [rows] = await con.execute(
       `
       SELECT
@@ -213,7 +213,7 @@ async function listTimeSlots(req, res) {
 }
 
 async function createBooking(req, res) {
-  // We still get booking_date, but we will ignore it and use CURDATE()
+  
   const { user_id, room_id, slot_id, booking_date, reason } = req.body;
 
   if (!user_id || !room_id || !slot_id || !booking_date) {
@@ -228,12 +228,12 @@ async function createBooking(req, res) {
   try {
     con = await getConnection();
 
-    // ⭐️ FIX 1: Set the timezone to match your app
+    
     await con.execute("SET time_zone = '+07:00'");
 
     await con.beginTransaction();
 
-    // 1. Check for user's existing bookings FOR THE SERVER'S CURRENT DATE
+    
     const [existingUserBookings] = await con.execute(
       "SELECT history_id FROM booking_history WHERE user_id = ? AND booking_date = CURDATE() AND (status = 'pending' OR status = 'approved')",
       [user_id]
@@ -246,7 +246,7 @@ async function createBooking(req, res) {
         .json({ error: "You already have an active or approved booking for this date. You can only make a new request if your previous one is rejected." });
     }
 
-    // 2. Check if the slot is disabled in the main table
+   
     const [slotRows] = await con.execute(
       "SELECT status FROM time_slots WHERE slot_id = ? FOR UPDATE",
       [slot_id]
@@ -262,7 +262,7 @@ async function createBooking(req, res) {
       return res.status(409).json({ error: "This time slot is permanently disabled." });
     }
 
-    // 3. Check if the slot is already booked by anyone FOR THE SERVER'S CURRENT DATE
+   
     const [existingSlotBookings] = await con.execute(
       "SELECT history_id FROM booking_history WHERE slot_id = ? AND booking_date = CURDATE() AND (status = 'pending' OR status = 'approved') FOR UPDATE",
       [slot_id]
@@ -273,14 +273,13 @@ async function createBooking(req, res) {
       return res.status(409).json({ error: "This time slot is no longer available. Please refresh." });
     }
 
-    // 4. Insert the new booking using CURDATE()
-    // ⭐️ FIX 2: Use CURDATE() instead of the date from the app
+
     const [result] = await con.execute(
       "INSERT INTO booking_history (user_id, room_id, slot_id, booking_date, reason, status) VALUES (?, ?, ?, CURDATE(), ?, 'pending')",
       [user_id, room_id, slot_id, reason || null]
     );
 
-    // 5. Commit the transaction
+
     await con.commit();
 
     res
@@ -409,9 +408,7 @@ async function approveBooking(req, res) {
       await con.rollback();
       return res.status(409).json({ error: "This booking has already been processed." });
     }
-    // ⭐️ THE STRAY 'a' CHARACTER WAS HERE. IT IS NOW REMOVED.
-
-    // This is no longer needed, but we keep it in case of other logic
+  
     const slot_id = bookingRows[0].slot_id;
 
     const updateReason = action === 'rejected' ? reason : null;
@@ -424,9 +421,6 @@ async function approveBooking(req, res) {
       await con.rollback();
       return res.status(404).json({ error: "Booking not found" });
     }
-
-    // ⭐️ DELETED: The "UPDATE time_slots SET status = ?" query is gone.
-    // It is no longer needed and was the source of the stale data.
 
     await con.commit();
 
@@ -654,7 +648,6 @@ async function getRoomHistory(req, res) {
 
   } catch (err) {
     console.error("getRoomHistory error:", err);
-    // ✅ FIX: Removed the stray comment text
     res.status(500).json({ error: "Database error" });
   } finally {
     if (con) con.release();
@@ -674,6 +667,6 @@ module.exports = {
   approveBooking,
   addLecturer,
   changePassword,
-  getRoomHistory, // ✅ EXPORT
-  listRoomsWithHistoryCount, // ✅ EXPORT
+  getRoomHistory,
+  listRoomsWithHistoryCount, 
 };
