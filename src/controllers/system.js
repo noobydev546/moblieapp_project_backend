@@ -654,6 +654,69 @@ async function getRoomHistory(req, res) {
   }
 }
 
+// dashboard show list room
+async function listRoomsWithAllTimeSlots(req, res) {
+  let con;
+  try {
+    con = await getConnection();
+    await con.execute("SET time_zone = '+07:00'");
+
+    const [rows] = await con.execute(
+      `
+      SELECT
+        r.room_id,
+        r.room_name,
+        r.status AS room_status,
+        ts.slot_id,
+        ts.time_period,
+        CASE
+          
+         
+          WHEN bh.status = 'approved' THEN 'Reserved'
+          WHEN bh.status = 'pending' THEN 'Pending'
+          WHEN r.status = 'Disable' OR ts.status = 'Disable' 
+               OR STR_TO_DATE(CONCAT(CURDATE(), ' ', SUBSTRING_INDEX(ts.time_period, '-', -1)), '%Y-%m-%d %H:%i') < NOW() 
+            THEN 'Disable'
+          ELSE 'Free'
+        END AS status
+      FROM rooms r
+      JOIN time_slots ts ON r.room_id = ts.room_id
+      LEFT JOIN booking_history bh
+        ON ts.slot_id = bh.slot_id
+        AND bh.booking_date = CURDATE()
+        AND (bh.status = 'approved' OR bh.status = 'pending')
+      ORDER BY r.room_name, ts.slot_id;
+      `
+    );
+
+    // send Data
+    const groupedRooms = {};
+    for (const row of rows) {
+      if (!groupedRooms[row.room_id]) {
+        groupedRooms[row.room_id] = {
+          room_id: row.room_id,
+          roomName: row.room_name,
+          status: row.room_status,
+          timeSlots: [],
+        };
+      }
+      groupedRooms[row.room_id].timeSlots.push({
+        slot_id: row.slot_id,
+        time_period: row.time_period,
+        status: row.status, 
+      });
+    }
+
+    const result = Object.values(groupedRooms);
+    res.json(result);
+
+  } catch (err) {
+    console.error("listRoomsWithAllTimeSlots error:", err);
+    res.status(500).json({ error: "Database error" });
+  } finally {
+    if (con) con.release();
+  }
+}
 
 module.exports = {
   listRooms,
@@ -669,4 +732,5 @@ module.exports = {
   changePassword,
   getRoomHistory,
   listRoomsWithHistoryCount, 
+  listRoomsWithAllTimeSlots,
 };

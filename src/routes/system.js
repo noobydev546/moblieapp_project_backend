@@ -13,16 +13,19 @@ const {
   changePassword,
   getRoomHistory, // ✅ 1. Import
   listRoomsWithHistoryCount, // ✅ 2. Import
+  listRoomsWithAllTimeSlots,
 } = require("../controllers/system.js");
 
 const router = Router();
 
 // Rooms
 router.get("/rooms", listRooms);
+router.get("/rooms/all-slots-today", listRoomsWithAllTimeSlots);
 router.get("/rooms/:id", getRoom);
 router.post("/rooms", createRoom);
 router.put("/rooms/:id", updateRoom);
 router.delete("/rooms/:id", deleteRoom);
+
 
 // Time slots for a room
 router.get("/rooms/:roomId/slots", listTimeSlots);
