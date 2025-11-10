@@ -655,6 +655,7 @@ async function getRoomHistory(req, res) {
 }
 
 // dashboard show list room
+// dashboard show list room
 async function listRoomsWithAllTimeSlots(req, res) {
   let con;
   try {
@@ -670,13 +671,18 @@ async function listRoomsWithAllTimeSlots(req, res) {
         ts.slot_id,
         ts.time_period,
         CASE
+          -- ✅ FIX: Check for all "Disable" conditions FIRST.
+          -- If time has passed OR the slot/room is permanently disabled, show 'Disable'.
+          WHEN r.status = 'Disable' 
+            OR ts.status = 'Disable' 
+            OR STR_TO_DATE(CONCAT(CURDATE(), ' ', SUBSTRING_INDEX(ts.time_period, '-', -1)), '%Y-%m-%d %H:%i') < NOW() 
+            THEN 'Disable'
           
-         
+          -- If it's not disabled, NOW check for active bookings for today.
           WHEN bh.status = 'approved' THEN 'Reserved'
           WHEN bh.status = 'pending' THEN 'Pending'
-          WHEN r.status = 'Disable' OR ts.status = 'Disable' 
-               OR STR_TO_DATE(CONCAT(CURDATE(), ' ', SUBSTRING_INDEX(ts.time_period, '-', -1)), '%Y-%m-%d %H:%i') < NOW() 
-            THEN 'Disable'
+
+          -- If none of the above, it's 'Free'.
           ELSE 'Free'
         END AS status
       FROM rooms r
@@ -703,7 +709,7 @@ async function listRoomsWithAllTimeSlots(req, res) {
       groupedRooms[row.room_id].timeSlots.push({
         slot_id: row.slot_id,
         time_period: row.time_period,
-        status: row.status, 
+        status: row.status,
       });
     }
 
