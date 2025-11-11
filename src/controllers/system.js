@@ -176,10 +176,8 @@ async function listTimeSlots(req, res) {
   try {
     con = await getConnection();
 
-   
     await con.execute("SET time_zone = '+07:00'");
 
- 
     const [rows] = await con.execute(
       `
       SELECT
@@ -187,12 +185,24 @@ async function listTimeSlots(req, res) {
         ts.room_id,
         ts.time_period,
         CASE
-          WHEN ts.status = 'Disable' THEN 'Disable'
+          -- ✅ FIX: Check for all "Disable" conditions FIRST.
+          WHEN r.status = 'Disable' 
+            OR ts.status = 'Disable' 
+            OR STR_TO_DATE(CONCAT(CURDATE(), ' ', SUBSTRING_INDEX(ts.time_period, '-', -1)), '%Y-%m-%d %H:%i') < NOW() 
+            THEN 'Disable'
+          
+          -- If it's not disabled, NOW check for active bookings for today.
           WHEN bh.status = 'approved' THEN 'Reserved'
           WHEN bh.status = 'pending' THEN 'Pending'
+
+          -- If none of the above, it's 'Free'.
           ELSE 'Free'
         END AS time_slot_status
       FROM time_slots ts
+
+      -- ✅ FIX: Join rooms table to check the room's main status
+      JOIN rooms r ON ts.room_id = r.room_id
+
       LEFT JOIN booking_history bh
         ON ts.slot_id = bh.slot_id
         AND bh.booking_date = CURDATE() 
