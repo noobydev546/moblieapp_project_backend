@@ -1,12 +1,12 @@
 const { getConnection } = require("../config/db.js");
-const bcrypt = require("bcrypt"); 
+const bcrypt = require("bcrypt");
 
-
+// --- PUBLIC FUNCTIONS (No token required) ---
 
 async function listRooms(req, res) {
-  let con; 
+  let con;
   try {
-    con = await getConnection(); 
+    con = await getConnection();
     const [rows] = await con.execute(
       "SELECT room_id, room_name, room_description, created_by, status FROM rooms"
     );
@@ -15,7 +15,7 @@ async function listRooms(req, res) {
     console.error("listRooms error:", err);
     res.status(500).json({ error: "Database error" });
   } finally {
-    if (con) con.release(); 
+    if (con) con.release();
   }
 }
 
@@ -41,8 +41,122 @@ async function getRoom(req, res) {
   }
 }
 
+async function listTimeSlots(req, res) {
+  const roomId = req.params?.roomId || req.query?.roomId;
+  if (!roomId) return res.status(400).json({ error: "roomId is required" });
+
+  let con;
+  try {
+    con = await getConnection();
+    await con.execute("SET time_zone = '+07:00'");
+    const [rows] = await con.execute(
+      `
+      SELECT
+        ts.slot_id,
+        ts.room_id,
+        ts.time_period,
+        CASE
+          WHEN r.status = 'Disable' 
+            OR ts.status = 'Disable' 
+            OR STR_TO_DATE(CONCAT(CURDATE(), ' ', SUBSTRING_INDEX(ts.time_period, '-', -1)), '%Y-%m-%d %H:%i') < NOW() 
+            THEN 'Disable'
+          WHEN bh.status = 'approved' THEN 'Reserved'
+          WHEN bh.status = 'pending' THEN 'Pending'
+          ELSE 'Free'
+        END AS time_slot_status
+      FROM time_slots ts
+      JOIN rooms r ON ts.room_id = r.room_id
+      LEFT JOIN booking_history bh
+        ON ts.slot_id = bh.slot_id
+        AND bh.booking_date = CURDATE() 
+        AND (bh.status = 'pending' OR bh.status = 'approved')
+      WHERE ts.room_id = ?
+      ORDER BY ts.slot_id
+      `,
+      [roomId]
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error("listTimeSlots error:", err);
+    res.status(500).json({ error: "Database error" });
+  } finally {
+    if (con) con.release();
+  }
+}
+
+async function listRoomsWithAllTimeSlots(req, res) {
+  let con;
+  try {
+    con = await getConnection();
+    await con.execute("SET time_zone = '+07:00'");
+    const [rows] = await con.execute(
+      `
+      SELECT
+        r.room_id,
+        r.room_name,
+        r.status AS room_status,
+        ts.slot_id,
+        ts.time_period,
+        CASE
+          WHEN r.status = 'Disable' 
+            OR ts.status = 'Disable' 
+            OR STR_TO_DATE(CONCAT(CURDATE(), ' ', SUBSTRING_INDEX(ts.time_period, '-', -1)), '%Y-%m-%d %H:%i') < NOW() 
+            THEN 'Disable'
+          WHEN bh.status = 'approved' THEN 'Reserved'
+          WHEN bh.status = 'pending' THEN 'Pending'
+          ELSE 'Free'
+        END AS status
+      FROM rooms r
+      JOIN time_slots ts ON r.room_id = ts.room_id
+      LEFT JOIN booking_history bh
+        ON ts.slot_id = bh.slot_id
+        AND bh.booking_date = CURDATE()
+        AND (bh.status = 'approved' OR bh.status = 'pending')
+      ORDER BY r.room_name, ts.slot_id;
+      `
+    );
+
+    const groupedRooms = {};
+    for (const row of rows) {
+      if (!groupedRooms[row.room_id]) {
+        groupedRooms[row.room_id] = {
+          room_id: row.room_id,
+          roomName: row.room_name,
+          status: row.room_status,
+          timeSlots: [],
+        };
+      }
+      groupedRooms[row.room_id].timeSlots.push({
+        slot_id: row.slot_id,
+        time_period: row.time_period,
+        status: row.status,
+      });
+    }
+    const result = Object.values(groupedRooms);
+    res.json(result);
+  } catch (err) {
+    console.error("listRoomsWithAllTimeSlots error:", err);
+    res.status(500).json({ error: "Database error" });
+  } finally {
+    if (con) con.release();
+  }
+}
+
+// --- PROTECTED FUNCTIONS (Token required) ---
+
 async function createRoom(req, res) {
-  const { room_name, room_description, created_by, status } = req.body;
+  // ✅ 1. PERMISSION CHECK: Get user info from token
+  const { id: created_by_id, role } = req.user;
+
+  // ✅ 2. CHECK ROLE: Only 'staff' can create rooms
+  if (role !== "staff") {
+    return res
+      .status(403)
+      .json({ error: "Forbidden: You do not have permission." });
+  }
+
+  // ✅ 3. Get data from body (created_by is now from token)
+  const { room_name, room_description, status } = req.body;
 
   if (!room_name)
     return res.status(400).json({ error: "room_name is required" });
@@ -56,13 +170,12 @@ async function createRoom(req, res) {
     con = await getConnection();
     await con.beginTransaction();
 
-   
     const [result] = await con.execute(
       "INSERT INTO rooms (room_name, room_description, created_by, status) VALUES (?, ?, ?, ?)",
       [
         room_name,
         room_description || null,
-        created_by || null, 
+        created_by_id, // ✅ 4. Use secure ID from token
         status,
       ]
     );
@@ -85,28 +198,35 @@ async function createRoom(req, res) {
       params
     );
 
-    await con.commit(); 
+    await con.commit();
 
     res.status(201).json({
       room_id: roomId,
       room_name,
       room_description,
-      created_by,
+      created_by: created_by_id, // Send back the ID of the creator
       status,
     });
   } catch (err) {
-    if (con) await con.rollback(); 
+    if (con) await con.rollback();
     console.error("createRoom error:", err);
     if (err && err.code === "ER_DUP_ENTRY") {
       return res.status(409).json({ error: "Room name already exists" });
     }
     res.status(500).json({ error: "Database error" });
   } finally {
-    if (con) con.release(); 
+    if (con) con.release();
   }
 }
 
 async function updateRoom(req, res) {
+  // ✅ 1. PERMISSION CHECK
+  if (req.user.role !== "staff") {
+    return res
+      .status(403)
+      .json({ error: "Forbidden: You do not have permission." });
+  }
+
   const { id } = req.params;
   const { room_name, room_description, status } = req.body;
   if (!id) return res.status(400).json({ error: "room id is required" });
@@ -120,12 +240,7 @@ async function updateRoom(req, res) {
     con = await getConnection();
     const [result] = await con.execute(
       "UPDATE rooms SET room_name = COALESCE(?, room_name), room_description = COALESCE(?, room_description), status = COALESCE(?, status) WHERE room_id = ?",
-      [
-        room_name,
-        room_description,
-        status,
-        id,
-      ]
+      [room_name, room_description, status, id]
     );
     if (result.affectedRows === 0)
       return res.status(404).json({ error: "Room not found" });
@@ -139,6 +254,13 @@ async function updateRoom(req, res) {
 }
 
 async function deleteRoom(req, res) {
+  // ✅ 1. PERMISSION CHECK
+  if (req.user.role !== "staff") {
+    return res
+      .status(403)
+      .json({ error: "Forbidden: You do not have permission." });
+  }
+
   const { id } = req.params;
   if (!id) return res.status(400).json({ error: "room id is required" });
 
@@ -147,6 +269,8 @@ async function deleteRoom(req, res) {
     con = await getConnection();
     await con.beginTransaction();
 
+    // Note: You should consider what to do with booking_history
+    // This currently orphans history records.
     await con.execute("DELETE FROM time_slots WHERE room_id = ?", [id]);
     const [result] = await con.execute("DELETE FROM rooms WHERE room_id = ?", [
       id,
@@ -168,95 +292,41 @@ async function deleteRoom(req, res) {
   }
 }
 
-async function listTimeSlots(req, res) {
-  const roomId = req.params?.roomId || req.query?.roomId;
-  if (!roomId) return res.status(400).json({ error: "roomId is required" });
-
-  let con;
-  try {
-    con = await getConnection();
-
-    await con.execute("SET time_zone = '+07:00'");
-
-    const [rows] = await con.execute(
-      `
-      SELECT
-        ts.slot_id,
-        ts.room_id,
-        ts.time_period,
-        CASE
-          -- ✅ FIX: Check for all "Disable" conditions FIRST.
-          WHEN r.status = 'Disable' 
-            OR ts.status = 'Disable' 
-            OR STR_TO_DATE(CONCAT(CURDATE(), ' ', SUBSTRING_INDEX(ts.time_period, '-', -1)), '%Y-%m-%d %H:%i') < NOW() 
-            THEN 'Disable'
-          
-          -- If it's not disabled, NOW check for active bookings for today.
-          WHEN bh.status = 'approved' THEN 'Reserved'
-          WHEN bh.status = 'pending' THEN 'Pending'
-
-          -- If none of the above, it's 'Free'.
-          ELSE 'Free'
-        END AS time_slot_status
-      FROM time_slots ts
-
-      -- ✅ FIX: Join rooms table to check the room's main status
-      JOIN rooms r ON ts.room_id = r.room_id
-
-      LEFT JOIN booking_history bh
-        ON ts.slot_id = bh.slot_id
-        AND bh.booking_date = CURDATE() 
-        AND (bh.status = 'pending' OR bh.status = 'approved')
-      WHERE ts.room_id = ?
-      ORDER BY ts.slot_id
-      `,
-      [roomId]
-    );
-
-    res.json(rows);
-  } catch (err) {
-    console.error("listTimeSlots error:", err);
-    res.status(500).json({ error: "Database error" });
-  } finally {
-    if (con) con.release();
-  }
-}
-
 async function createBooking(req, res) {
-  
-  const { user_id, room_id, slot_id, booking_date, reason } = req.body;
+  // ✅ 1. Get user ID SECURELY from the token
+  const { id: user_id } = req.user;
 
-  if (!user_id || !room_id || !slot_id || !booking_date) {
+  // ✅ 2. Get other data from body
+  const { room_id, slot_id, booking_date, reason } = req.body;
+
+  if (!room_id || !slot_id || !booking_date) {
     return res
       .status(400)
-      .json({
-        error: "user_id, room_id, slot_id and booking_date are required",
-      });
+      .json({ error: "room_id, slot_id and booking_date are required" });
   }
 
   let con;
   try {
     con = await getConnection();
-
-    
     await con.execute("SET time_zone = '+07:00'");
-
     await con.beginTransaction();
 
-    
+    // ✅ 3. Check using the SECURE user_id from the token
     const [existingUserBookings] = await con.execute(
       "SELECT history_id FROM booking_history WHERE user_id = ? AND booking_date = CURDATE() AND (status = 'pending' OR status = 'approved')",
-      [user_id]
+      [user_id] // Use secure ID
     );
 
     if (existingUserBookings.length > 0) {
       await con.rollback();
       return res
         .status(409)
-        .json({ error: "You already have an active or approved booking for this date. You can only make a new request if your previous one is rejected." });
+        .json({
+          error:
+            "You already have an active or approved booking for this date. You can only make a new request if your previous one is rejected.",
+        });
     }
 
-   
     const [slotRows] = await con.execute(
       "SELECT status FROM time_slots WHERE slot_id = ? FOR UPDATE",
       [slot_id]
@@ -266,13 +336,13 @@ async function createBooking(req, res) {
       await con.rollback();
       return res.status(404).json({ error: "Time slot not found." });
     }
-
-    if (slotRows[0].status === 'Disable') {
+    if (slotRows[0].status === "Disable") {
       await con.rollback();
-      return res.status(409).json({ error: "This time slot is permanently disabled." });
+      return res
+        .status(409)
+        .json({ error: "This time slot is permanently disabled." });
     }
 
-   
     const [existingSlotBookings] = await con.execute(
       "SELECT history_id FROM booking_history WHERE slot_id = ? AND booking_date = CURDATE() AND (status = 'pending' OR status = 'approved') FOR UPDATE",
       [slot_id]
@@ -280,29 +350,27 @@ async function createBooking(req, res) {
 
     if (existingSlotBookings.length > 0) {
       await con.rollback();
-      return res.status(409).json({ error: "This time slot is no longer available. Please refresh." });
+      return res
+        .status(409)
+        .json({ error: "This time slot is no longer available. Please refresh." });
     }
-
 
     const [result] = await con.execute(
       "INSERT INTO booking_history (user_id, room_id, slot_id, booking_date, reason, status) VALUES (?, ?, ?, CURDATE(), ?, 'pending')",
-      [user_id, room_id, slot_id, reason || null]
+      [user_id, room_id, slot_id, reason || null] // ✅ 4. Use secure ID
     );
-
 
     await con.commit();
 
-    res
-      .status(201)
-      .json({
-        history_id: result.insertId,
-        user_id,
-        room_id,
-        slot_id,
-        booking_date: "Booking for today", // This response value doesn't affect the database
-        reason,
-        status: "pending",
-      });
+    res.status(201).json({
+      history_id: result.insertId,
+      user_id, // ✅ 5. Send back the secure ID
+      room_id,
+      slot_id,
+      booking_date: "Booking for today",
+      reason,
+      status: "pending",
+    });
   } catch (err) {
     if (con) await con.rollback();
     console.error("createBooking error:", err);
@@ -313,18 +381,17 @@ async function createBooking(req, res) {
 }
 
 async function listUserBookings(req, res) {
-  const userId = req.params?.userId || req.query?.userId || req.body?.user_id;
-  const userRole = req.query?.role;
-  if (!userId || !userRole)
-    return res.status(400).json({ error: "userId and role are required" });
+  // ✅ 1. Get user info SECURELY from token
+  // We no longer need to trust req.params or req.query for user info
+  const { id: userId, role: userRole } = req.user;
 
   let con;
   try {
     con = await getConnection();
     let query = "";
-    let params = [userId]; // Default params
+    let params = [userId]; // Default params now use the secure ID
 
-    switch (userRole) {
+    switch (userRole) { // ✅ 2. Use secure role from token
       case "student":
         query = `
           SELECT 
@@ -346,12 +413,12 @@ async function listUserBookings(req, res) {
           JOIN rooms r ON bh.room_id = r.room_id
           JOIN time_slots ts ON bh.slot_id = ts.slot_id
           LEFT JOIN users u_approver ON bh.approver_id = u_approver.user_id
-          WHERE bh.user_id = ?
+          WHERE bh.user_id = ? 
           ORDER BY bh.history_id DESC;`;
+        // params is already [userId]
         break;
 
       case "lecturer":
-        // This query is for "Check Requests"
         query = `
           SELECT 
             bh.history_id,
@@ -367,7 +434,28 @@ async function listUserBookings(req, res) {
           JOIN users u_student ON bh.user_id = u_student.user_id
           WHERE bh.status = 'pending'
           ORDER BY bh.history_id DESC;`;
-        params = [];
+        params = []; // Lecturer sees all pending
+        break;
+      
+      case "staff":
+        // ✅ 3. Added 'staff' case (optional, but good practice)
+        // Staff sees ALL bookings
+        query = `
+          SELECT 
+            bh.history_id,
+            r.room_name,
+            DATE_FORMAT(bh.booking_date, '%Y-%m-%d') as booking_date,
+            ts.time_period,
+            bh.status,
+            u_student.username as student_name,
+            u_approver.username as approver_name
+          FROM booking_history bh
+          JOIN rooms r ON bh.room_id = r.room_id
+          JOIN time_slots ts ON bh.slot_id = ts.slot_id
+          JOIN users u_student ON bh.user_id = u_student.user_id
+          LEFT JOIN users u_approver ON bh.approver_id = u_approver.user_id
+          ORDER BY bh.history_id DESC;`;
+        params = []; // Staff sees all
         break;
 
       default:
@@ -385,17 +473,24 @@ async function listUserBookings(req, res) {
 }
 
 async function approveBooking(req, res) {
+  // ✅ 1. Get approver info SECURELY from token
+  const { id: approver_id, role: approver_role } = req.user;
+
+  // ✅ 2. PERMISSION CHECK
+  if (approver_role !== "lecturer" && approver_role !== "staff") {
+    return res
+      .status(403)
+      .json({ error: "Forbidden: You do not have permission to approve." });
+  }
+
   const { history_id } = req.params;
-  const { approver_id, action, reason } = req.body;
-  if (!history_id || !approver_id || !action)
-    return res
-      .status(400)
-      .json({ error: "history_id, approver_id and action are required" });
+  const { action, reason } = req.body; // ✅ 3. 'approver_id' is removed from body
+
+  if (!history_id || !action)
+    return res.status(400).json({ error: "history_id and action are required" });
   if (!["approved", "rejected"].includes(action))
-    return res
-      .status(400)
-      .json({ error: "action must be approved or rejected" });
-  if (action === 'rejected' && (!reason || reason.trim().length === 0)) {
+    return res.status(400).json({ error: "action must be approved or rejected" });
+  if (action === "rejected" && (!reason || reason.trim().length === 0)) {
     return res.status(400).json({ error: "reason is required for rejection" });
   }
 
@@ -414,17 +509,17 @@ async function approveBooking(req, res) {
       return res.status(404).json({ error: "Booking not found" });
     }
 
-    if (bookingRows[0].status !== 'pending') {
+    if (bookingRows[0].status !== "pending") {
       await con.rollback();
-      return res.status(409).json({ error: "This booking has already been processed." });
+      return res
+        .status(409)
+        .json({ error: "This booking has already been processed." });
     }
-  
-    const slot_id = bookingRows[0].slot_id;
 
-    const updateReason = action === 'rejected' ? reason : null;
+    const updateReason = action === "rejected" ? reason : null;
     const [result] = await con.execute(
       "UPDATE booking_history SET status = ?, approver_id = ?, approved_at = CURRENT_TIMESTAMP, reason = ? WHERE history_id = ?",
-      [action, approver_id, updateReason, history_id]
+      [action, approver_id, updateReason, history_id] // ✅ 4. Use secure approver_id
     );
 
     if (result.affectedRows === 0) {
@@ -445,13 +540,18 @@ async function approveBooking(req, res) {
 }
 
 async function addLecturer(req, res) {
+  // ✅ 1. PERMISSION CHECK
+  if (req.user.role !== "staff") {
+    return res
+      .status(403)
+      .json({ error: "Forbidden: You do not have permission." });
+  }
+
   const { username, email, password, confirmPassword } = req.body;
   if (!username || !email || !password || !confirmPassword) {
-    return res
-      .status(400)
-      .json({
-        error: "username, email, password and confirmPassword are required",
-      });
+    return res.status(400).json({
+      error: "username, email, password and confirmPassword are required",
+    });
   }
   if (password !== confirmPassword) {
     return res
@@ -490,11 +590,16 @@ async function addLecturer(req, res) {
 }
 
 async function changePassword(req, res) {
-  const { user_id, oldPassword, newPassword } = req.body;
-  if (!user_id || !oldPassword || !newPassword) {
+  // ✅ 1. Get user ID SECURELY from token
+  const { id: user_id } = req.user;
+
+  // ✅ 2. Get passwords from body
+  const { oldPassword, newPassword } = req.body;
+  
+  if (!oldPassword || !newPassword) {
     return res
       .status(400)
-      .json({ error: "user_id, oldPassword, and newPassword are required" });
+      .json({ error: "oldPassword and newPassword are required" });
   }
 
   let con;
@@ -502,7 +607,7 @@ async function changePassword(req, res) {
     con = await getConnection();
     const [users] = await con.execute(
       "SELECT password FROM users WHERE user_id = ?",
-      [user_id]
+      [user_id] // ✅ 3. Use secure ID
     );
 
     if (users.length === 0) {
@@ -520,7 +625,7 @@ async function changePassword(req, res) {
 
     await con.execute("UPDATE users SET password = ? WHERE user_id = ?", [
       newHashedPassword,
-      user_id,
+      user_id, // ✅ 4. Use secure ID
     ]);
 
     res.json({ message: "Password updated successfully" });
@@ -532,23 +637,22 @@ async function changePassword(req, res) {
   }
 }
 
-
-// --- HISTORY FUNCTIONS ---
+// --- HISTORY FUNCTIONS (PROTECTED) ---
 
 async function listRoomsWithHistoryCount(req, res) {
-  const { userId, role } = req.query;
-  if (!userId || !role) {
-    return res.status(400).json({ error: "userId and role are required" });
-  }
+  // ✅ 1. Get user info SECURELY from token
+  const { id: userId, role } = req.user;
+  
+  // (No longer need req.query)
 
   let con;
   let query = "";
-  let params = [userId];
+  let params = [userId]; // Default params use secure ID
 
   try {
     con = await getConnection();
 
-    switch (role) {
+    switch (role) { // ✅ 2. Use secure role
       case "lecturer":
         query = `
           SELECT 
@@ -564,6 +668,7 @@ async function listRoomsWithHistoryCount(req, res) {
           GROUP BY r.room_id, r.room_name, r.status
           ORDER BY r.room_name;
         `;
+        // params is already [userId]
         break;
 
       case "staff":
@@ -583,13 +688,14 @@ async function listRoomsWithHistoryCount(req, res) {
         break;
 
       default:
-        return res.status(400).json({ error: "Invalid role specified for history count" });
+        // A student might be trying to access this?
+        return res.status(403).json({ error: "Forbidden: You do not have permission." });
     }
 
     const [rows] = await con.execute(query, params);
     res.json(rows);
-
-  } catch (err) {
+  } catch (err)
+ {
     console.error("listRoomsWithHistoryCount error:", err);
     res.status(500).json({ error: "Database error" });
   } finally {
@@ -599,21 +705,23 @@ async function listRoomsWithHistoryCount(req, res) {
 
 async function getRoomHistory(req, res) {
   const { roomId } = req.params;
-  const { role, userId } = req.query;
+  
+  // ✅ 1. Get user info SECURELY from token
+  const { id: userId, role } = req.user;
 
-  if (!roomId || !role || !userId) {
-    return res.status(400).json({ error: "roomId, role, and userId are required" });
+  if (!roomId) {
+    return res.status(400).json({ error: "roomId is required" });
   }
 
   let con;
   let query = "";
-  let params = [roomId, userId];
+  let params = [roomId, userId]; // Default params
 
   try {
     con = await getConnection();
     await con.execute("SET time_zone = '+07:00'");
 
-    switch (role) {
+    switch (role) { // ✅ 2. Use secure role
       case "lecturer":
         query = `
       SELECT 
@@ -628,8 +736,9 @@ async function getRoomHistory(req, res) {
       WHERE bh.room_id = ? 
         AND bh.approver_id = ? 
         AND (bh.status = 'approved' OR bh.status = 'rejected')
-      ORDER BY bh.history_id DESC  -- ✅ FIX: newest first
+      ORDER BY bh.history_id DESC
     `;
+        // params is already [roomId, userId]
         break;
 
       case "staff":
@@ -647,15 +756,18 @@ async function getRoomHistory(req, res) {
       JOIN users u_student ON bh.user_id = u_student.user_id
       LEFT JOIN users u_approver ON bh.approver_id = u_approver.user_id
       WHERE bh.room_id = ? 
-      ORDER BY bh.history_id DESC  -- ✅ FIX: newest first
+      ORDER BY bh.history_id DESC
     `;
-        params = [roomId];
+        params = [roomId]; // Staff just needs room ID
         break;
+
+      default:
+        // A student might be trying to access this?
+        return res.status(403).json({ error: "Forbidden: You do not have permission." });
     }
 
     const [rows] = await con.execute(query, params);
     res.json(rows);
-
   } catch (err) {
     console.error("getRoomHistory error:", err);
     res.status(500).json({ error: "Database error" });
@@ -664,89 +776,21 @@ async function getRoomHistory(req, res) {
   }
 }
 
-// dashboard show list room
-// dashboard show list room
-async function listRoomsWithAllTimeSlots(req, res) {
-  let con;
-  try {
-    con = await getConnection();
-    await con.execute("SET time_zone = '+07:00'");
-
-    const [rows] = await con.execute(
-      `
-      SELECT
-        r.room_id,
-        r.room_name,
-        r.status AS room_status,
-        ts.slot_id,
-        ts.time_period,
-        CASE
-          -- ✅ FIX: Check for all "Disable" conditions FIRST.
-          -- If time has passed OR the slot/room is permanently disabled, show 'Disable'.
-          WHEN r.status = 'Disable' 
-            OR ts.status = 'Disable' 
-            OR STR_TO_DATE(CONCAT(CURDATE(), ' ', SUBSTRING_INDEX(ts.time_period, '-', -1)), '%Y-%m-%d %H:%i') < NOW() 
-            THEN 'Disable'
-          
-          -- If it's not disabled, NOW check for active bookings for today.
-          WHEN bh.status = 'approved' THEN 'Reserved'
-          WHEN bh.status = 'pending' THEN 'Pending'
-
-          -- If none of the above, it's 'Free'.
-          ELSE 'Free'
-        END AS status
-      FROM rooms r
-      JOIN time_slots ts ON r.room_id = ts.room_id
-      LEFT JOIN booking_history bh
-        ON ts.slot_id = bh.slot_id
-        AND bh.booking_date = CURDATE()
-        AND (bh.status = 'approved' OR bh.status = 'pending')
-      ORDER BY r.room_name, ts.slot_id;
-      `
-    );
-
-    // send Data
-    const groupedRooms = {};
-    for (const row of rows) {
-      if (!groupedRooms[row.room_id]) {
-        groupedRooms[row.room_id] = {
-          room_id: row.room_id,
-          roomName: row.room_name,
-          status: row.room_status,
-          timeSlots: [],
-        };
-      }
-      groupedRooms[row.room_id].timeSlots.push({
-        slot_id: row.slot_id,
-        time_period: row.time_period,
-        status: row.status,
-      });
-    }
-
-    const result = Object.values(groupedRooms);
-    res.json(result);
-
-  } catch (err) {
-    console.error("listRoomsWithAllTimeSlots error:", err);
-    res.status(500).json({ error: "Database error" });
-  } finally {
-    if (con) con.release();
-  }
-}
-
 module.exports = {
+  // Public
   listRooms,
   getRoom,
+  listTimeSlots,
+  listRoomsWithAllTimeSlots,
+  // Protected
   createRoom,
   updateRoom,
   deleteRoom,
-  listTimeSlots,
   createBooking,
   listUserBookings,
   approveBooking,
   addLecturer,
   changePassword,
   getRoomHistory,
-  listRoomsWithHistoryCount, 
-  listRoomsWithAllTimeSlots,
+  listRoomsWithHistoryCount,
 };
