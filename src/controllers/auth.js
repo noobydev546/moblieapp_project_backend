@@ -5,7 +5,7 @@ const jwt = require('jsonwebtoken'); // <-- 1. IMPORT JWT
 // 2. DEFINE YOUR SECRET KEY
 // !! IMPORTANT: In a real app, load this from a .env file, do NOT hardcode it.
 // e.g., const JWT_SECRET = process.env.JWT_SECRET;
-const JWT_SECRET = 'your-super-secret-key-that-no-one-should-know'; 
+const JWT_SECRET = 'secret_key_group_project_4'; 
 
 async function login(req, res) {
     const { username, password } = req.body;
