@@ -1,52 +1,56 @@
 const { Router } = require("express");
+
+// --- 1. IMPORT THE MIDDLEWARE ---
+const verifyToken = require("../midleware/authMiddleware.js");
+
+// --- 2. IMPORT ALL CONTROLLERS ---
 const {
+  // Public
   listRooms,
   getRoom,
+  listTimeSlots,
+  listRoomsWithAllTimeSlots, // <-- Added
+  // Protected
   createRoom,
   updateRoom,
   deleteRoom,
-  listTimeSlots,
   createBooking,
   listUserBookings,
   approveBooking,
-  addLecturer,
-  changePassword,
-  getRoomHistory, // ✅ 1. Import
-  listRoomsWithHistoryCount, // ✅ 2. Import
-  listRoomsWithAllTimeSlots,
+  addLecturer, // <-- Added
+  changePassword, // <-- Added
+  getRoomHistory, // <-- Added
+  listRoomsWithHistoryCount, // <-- Added
 } = require("../controllers/system.js");
 
 const router = Router();
 
-// Rooms
+// --- PUBLIC ROUTES (No token needed) ---
+// Anyone can see the list of rooms, room details, and available slots
 router.get("/rooms", listRooms);
-router.get("/rooms/all-slots-today", listRoomsWithAllTimeSlots);
+router.get("/rooms/all-slots-today", listRoomsWithAllTimeSlots); // <-- Enabled
 router.get("/rooms/:id", getRoom);
-router.post("/rooms", createRoom);
-router.put("/rooms/:id", updateRoom);
-router.delete("/rooms/:id", deleteRoom);
-
-
-// Time slots for a room
 router.get("/rooms/:roomId/slots", listTimeSlots);
 
-// Bookings
-router.post("/bookings", createBooking);
-router.get("/bookings/user/:userId", listUserBookings);
-router.post("/bookings/:history_id/approve", approveBooking);
+// --- PROTECTED ROUTES (Token REQUIRED) ---
+// verifyToken will run first to check if the user is logged in.
 
-// New route for adding lecturers
-router.post("/lecturers", addLecturer);
+// Rooms (Must be logged in)
+router.post("/rooms", verifyToken, createRoom);
+router.put("/rooms/:id", verifyToken, updateRoom);
+router.delete("/rooms/:id", verifyToken, deleteRoom);
 
-// Route for changing password
-router.put('/user/password', changePassword); 
+// Bookings (Must be logged in)
+router.post("/bookings", verifyToken, createBooking);
+router.get("/bookings/user/:userId", verifyToken, listUserBookings); // Note: The controller now ignores :userId and uses the token
+router.post("/bookings/:history_id/approve", verifyToken, approveBooking);
 
-// ✅ 3. Route for the main history page (Lecturer & Staff)
-// e.g., /api/history/rooms?role=staff&userId=2
-router.get("/history/rooms", listRoomsWithHistoryCount);
+// User Management (Must be logged in)
+router.post("/lecturers", verifyToken, addLecturer); // <-- Enabled
+router.put("/user/password", verifyToken, changePassword); // <-- Enabled
 
-// ✅ 4. Route for the history detail page (Lecturer & Staff)
-// e.g., /api/rooms/1/history?role=staff&userId=2
-router.get("/rooms/:roomId/history", getRoomHistory);
+// History (Must be logged in)
+router.get("/history/rooms", verifyToken, listRoomsWithHistoryCount); // <-- Enabled
+router.get("/rooms/:roomId/history", verifyToken, getRoomHistory); // <-- Enabled
 
 module.exports = router;
