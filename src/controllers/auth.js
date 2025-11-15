@@ -1,46 +1,66 @@
 const { getConnection } = require("../config/db.js");
 const bcrypt = require("bcrypt");
+const jwt = require('jsonwebtoken'); // <-- 1. IMPORT JWT
+
+// 2. DEFINE YOUR SECRET KEY
+// !! IMPORTANT: In a real app, load this from a .env file, do NOT hardcode it.
+// e.g., const JWT_SECRET = process.env.JWT_SECRET;
+const JWT_SECRET = 'your-super-secret-key-that-no-one-should-know'; 
 
 async function login(req, res) {
-      const { username, password } = req.body;
-      if (!username || !password) {
-            return res
-                  .status(400)
-                  .json({ error: "username and password are required" });
-      }
+    const { username, password } = req.body;
+    if (!username || !password) {
+        return res
+            .status(400)
+            .json({ error: "username and password are required" });
+    }
 
-      const sql = "SELECT * FROM `users` WHERE username = ?";
-      let con;
-      try {
-            con = await getConnection();
-            const [results] = await con.execute(sql, [username]);
+    const sql = "SELECT * FROM `users` WHERE username = ?";
+    let con;
+    try {
+        con = await getConnection();
+        const [results] = await con.execute(sql, [username]);
 
-            if (results.length !== 1) {
-                  // No user found with that username
-                  return res.status(401).json({ error: "Invalid credentials" });
-            }
+        if (results.length !== 1) {
+            // No user found
+            return res.status(401).json({ error: "Invalid credentials" });
+        }
 
-            const user = results[0];
-            const same = await bcrypt.compare(password, user.password);
+        const user = results[0];
+        const same = await bcrypt.compare(password, user.password);
 
-            if (same) {
-                  // ✅ FIX IS HERE: Added 'email: user.email'
-                  return res.json({
-                        username: user.username,
-                        id: user.user_id, // Flutter app will receive this as 'id'
-                        role: user.role,
-                        email: user.email // <-- THIS LINE WAS ADDED
-                  });
-            } else {
-                  // Password did not match
-                  return res.status(401).json({ error: "Invalid credentials" });
-            }
-      } catch (err) {
-            console.error("login error:", err);
-            return res.status(500).json({ error: "Database error" });
-      } finally {
-            if (con) con.release();
-      }
+        if (same) {
+            // ✅ PASSWORD IS CORRECT - CREATE AND SEND TOKEN
+            
+            // 3. Create the payload (data to store in the token)
+            const payload = {
+                id: user.user_id,
+                username: user.username,
+                role: user.role,
+                email: user.email
+            };
+
+            // 4. Sign the token
+            const token = jwt.sign(payload, JWT_SECRET, {
+                expiresIn: '1h' // Token will expire in 1 hour
+            });
+
+            // 5. Send the token back to the client
+            return res.json({
+                message: "Login successful",
+                token: token
+            });
+
+        } else {
+            // Password did not match
+            return res.status(401).json({ error: "Invalid credentials" });
+        }
+    } catch (err) {
+        console.error("login error:", err);
+        return res.status(500).json({ error: "Database error" });
+    } finally {
+        if (con) con.release();
+    }
 }
 
 async function register(req, res) {
