@@ -145,21 +145,18 @@ async function listRoomsWithAllTimeSlots(req, res) {
 // --- PROTECTED FUNCTIONS (Token required) ---
 
 async function createRoom(req, res) {
-  // ✅ 1. PERMISSION CHECK: Get user info from token
   const { id: created_by_id, role } = req.user;
-
-  // ✅ 2. CHECK ROLE: Only 'staff' can create rooms
   if (role !== "staff") {
     return res
       .status(403)
       .json({ error: "Forbidden: You do not have permission." });
   }
-
-  // ✅ 3. Get data from body (created_by is now from token)
   const { room_name, room_description, status } = req.body;
 
   if (!room_name)
     return res.status(400).json({ error: "room_name is required" });
+  if (!room_description)
+    return res.status(400).json({ error: "room_description is required" });
   if (!status)
     return res.status(400).json({ error: "status is required" });
   if (!["Available", "Disable"].includes(status))
@@ -174,12 +171,11 @@ async function createRoom(req, res) {
       "INSERT INTO rooms (room_name, room_description, created_by, status) VALUES (?, ?, ?, ?)",
       [
         room_name,
-        room_description || null,
-        created_by_id, // ✅ 4. Use secure ID from token
+        room_description,
+        created_by_id,
         status,
       ]
     );
-
     const roomId = result.insertId;
     const defaultSlots = [
       "08:00-10:00",
@@ -436,7 +432,7 @@ async function listUserBookings(req, res) {
           ORDER BY bh.history_id DESC;`;
         params = []; // Lecturer sees all pending
         break;
-      
+
       case "staff":
         // ✅ 3. Added 'staff' case (optional, but good practice)
         // Staff sees ALL bookings
@@ -595,7 +591,7 @@ async function changePassword(req, res) {
 
   // ✅ 2. Get passwords from body
   const { oldPassword, newPassword } = req.body;
-  
+
   if (!oldPassword || !newPassword) {
     return res
       .status(400)
@@ -642,7 +638,7 @@ async function changePassword(req, res) {
 async function listRoomsWithHistoryCount(req, res) {
   // ✅ 1. Get user info SECURELY from token
   const { id: userId, role } = req.user;
-  
+
   // (No longer need req.query)
 
   let con;
@@ -694,8 +690,7 @@ async function listRoomsWithHistoryCount(req, res) {
 
     const [rows] = await con.execute(query, params);
     res.json(rows);
-  } catch (err)
- {
+  } catch (err) {
     console.error("listRoomsWithHistoryCount error:", err);
     res.status(500).json({ error: "Database error" });
   } finally {
@@ -705,7 +700,7 @@ async function listRoomsWithHistoryCount(req, res) {
 
 async function getRoomHistory(req, res) {
   const { roomId } = req.params;
-  
+
   // ✅ 1. Get user info SECURELY from token
   const { id: userId, role } = req.user;
 
